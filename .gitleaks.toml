@@ -1,0 +1,9 @@
+[allowlist]
+  description = "Known false positives in this repo"
+
+  [[allowlist.rules]]
+    # DISCORD_PUBLIC_KEY is the Ed25519 verification key — intentionally public.
+    # It lets us verify that requests came from Discord; it cannot impersonate us.
+    # The actual secret (DISCORD_TOKEN) is in .dev.vars which is gitignored.
+    id = "discord-api-token"
+    paths = ["wrangler.jsonc"]

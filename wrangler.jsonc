@@ -1,0 +1,29 @@
+{
+  // OSRS clan companion — Discord interactions bot (mirrors picks-worker).
+  "name": "osrs-clan-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+
+  // Daily snapshot pull at 08:00 UTC: scheduled() asks Wise Old Man to refresh
+  // each tracked RSN, then stores a snapshot in D1. (Idempotent — safe to re-run.)
+  "triggers": { "crons": ["0 8 * * *"] },
+
+  // D1 binding — used in code as env.DB. Create with:
+  //   npx wrangler d1 create osrs_clan
+  // then paste the printed database_id below.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "osrs_clan",
+      "database_id": "ac74f21d-1ae4-4fa8-b118-a67f829ddd18"
+    }
+  ],
+
+  // Public identifiers (not secrets). Fill from the Discord Developer Portal.
+  // The bot token is a SECRET: npx wrangler secret put DISCORD_TOKEN
+  "vars": {
+    "DISCORD_APPLICATION_ID": "1520829849244139661",
+    "DISCORD_PUBLIC_KEY": "a4369f5e28f68f88235f042eb65d103956af93efcd92f0f974276b2edb9cde02",
+    "GUILD_ID": "690589122833678427"
+  }
+}

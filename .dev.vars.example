@@ -1,0 +1,7 @@
+# Copy to `.dev.vars` (gitignored) for local `npm run register` / `wrangler dev`.
+# These are SECRETS — the real .dev.vars is never committed.
+
+DISCORD_TOKEN=your-bot-token-here
+
+# Phase 3 (LLM /ask) — optional until then:
+# ANTHROPIC_API_KEY=sk-ant-...

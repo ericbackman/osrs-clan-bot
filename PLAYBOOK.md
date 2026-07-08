@@ -15,17 +15,22 @@
 ## 1. System map
 
 - **What**: ToS-safe Discord bot for "The Dawg Pound" OSRS friend clan. Cloudflare
-  Worker answers 7 slash commands from Cloudflare D1; the only machine-driven
+  Worker answers 9 slash commands from Cloudflare D1; the only machine-driven
   recurring op is a nightly cron that refreshes every tracked player via the
-  **Wise Old Man** API, stores a snapshot, announces new rare drops, and
-  optionally auto-posts the weekly gains board.
+  **Wise Old Man** API, stores a snapshot (skills + boss KC + activities),
+  announces new rare drops **and milestones** (99s/maxes/KC via WOM achievements),
+  and optionally auto-posts the weekly gains board.
 - **Live URL**: `https://osrs-clan-bot.ericbackman81.workers.dev`
 - **Schedule**: nightly cron `0 8 * * *` (08:00 UTC) — `osrs-clan-bot/wrangler.jsonc`
   `triggers.crons`. Registered in workspace [`AUTOMATION.md`](../AUTOMATION.md#L101)
   under Layer 3 (Cloudflare Worker crons).
 - **D1 database**: `osrs_clan` (binding `DB`, id `ac74f21d-1ae4-4fa8-b118-a67f829ddd18`
   — `wrangler.jsonc`). Tables: `settings`, `players`, `snapshots` (append-only,
-  one row per player per capture), `skill_xp` — see `schema.sql`.
+  one row per player per capture), `skill_xp`, `boss_kc`, `activity_score`
+  (per-snapshot child rows), and `announced_milestones` (milestone dedup) — see
+  `schema.sql`. `boss_kc`/`activity_score`/`announced_milestones` were added
+  2026-07-08 (§8); apply with the additive `wrangler d1 execute ... --file schema.sql`
+  step (OP-4) before deploying the code that reads them.
 - **Source of truth**: Wise Old Man (`api.wiseoldman.net/v2`) is the stats source;
   D1 is the store. Discord's 3s interaction deadline means commands always answer
   from D1, never call WOM live (exception: `/track add` grabs one immediate
@@ -124,10 +129,11 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   ```bash
   npm run register
   ```
-- **Verify**: console prints `Registered 7 commands to guild 690589122833678427.`
+- **Verify**: console prints `Registered 9 commands to guild 690589122833678427.`
   (count matches however many top-level commands are in `scripts/register.mjs`
-  at the time). The new/changed command appears in the Discord guild
-  **immediately** — it's guild-scoped, not global.
+  at the time — 9 after the 2026-07-08 `/boss` + `/clues` additions). The
+  new/changed command appears in the Discord guild **immediately** — it's
+  guild-scoped, not global.
 - **If it fails**: exit code 1 with `Missing config...` means `DISCORD_TOKEN` /
   `DISCORD_APPLICATION_ID` / `GUILD_ID` didn't resolve — check `.dev.vars`
   exists and is non-empty. **Never enter `DISCORD_TOKEN` by piping it through
@@ -158,6 +164,8 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 |---|---|---|---|
 | One player missing from last night's snapshot batch | Per-player WOM call failed (404/renamed/rate-limited) — caught individually, `console.error`, loop continues (`src/index.ts` `runDailySnapshot`, the `try/catch` around `wom.updatePlayer`) | Usually self-heals — WOM tracks renames server-side (`src/wom.ts` header comment). Check `npx wrangler tail osrs-clan-bot` while re-triggering, or wait for tomorrow's run | Re-run the health-check count query the next day; row count matches tracked players |
 | No rare-drops message posted overnight | Either no one's collection-log count rose, or the announce step threw (`drops announce skipped: ...` in logs) | Check `wrangler tail` / CF dashboard logs for that string; if `schedule='off'` or `post_channel_id` unset in `settings`, that's expected — check via the settings query in section 2 | `SELECT * FROM settings` shows `post_channel_id` set and `schedule != 'off'` |
+| No milestone message ever posts, or a player's history never announces | **Expected on a player's FIRST cron after 2026-07-08:** they're seeded silently (all current achievements recorded, nothing announced) so we don't dump years of 99s at once — real milestones announce from the *next* one earned. Also expected if `schedule='off'`/no channel. Per-player fetch errors log `milestones skipped for <name>: ...` | Confirm the player has a row in `announced_milestones` (seeding ran): `SELECT COUNT(*) FROM announced_milestones WHERE rsn='<canonical rsn>'`. If a specific fetch fails, check `wrangler tail` for the skip line — usually a transient WOM 404/429, self-heals next night | A milestone earned *after* the seeding night appears in the channel; `announced_milestones` has a `__seeded__` sentinel row for that player |
+| A player's milestone announces twice | Dedup relies on stable WOM achievement `name` strings keyed by canonical `rsn`; a mid-flight rsn change could re-seed under a new key | Rare — confirm the `rsn` in `players` matches what `announced_milestones` used; do not delete rows to "fix" (that re-announces). Escalate if it recurs | Each `(rsn, milestone)` pair appears once in `announced_milestones` (PRIMARY KEY enforces it) |
 | No weekly board posted | `auto-post skipped: ...` logged, OR `schedule='weekly'` and today isn't Monday UTC (expected, not a bug), OR `schedule='off'` | Check logs for the skip message; check `isMonday` logic only applies when `schedule='weekly'` | Settings query + `new Date().getUTCDay() === 1` check |
 | `/leaderboard` or `/drops` says "not enough history" for a newly-added roster | Gains need **two** nightly snapshots as a baseline — expected for brand-new players (README callout) | None needed — wait for the next nightly cron | `/stats <rsn>` should already work (immediate snapshot on `/track add`); `/leaderboard` works after night 2 |
 | `npm run register` exits 1 with a config message | `DISCORD_TOKEN`/`DISCORD_APPLICATION_ID`/`GUILD_ID` didn't resolve | Confirm `.dev.vars` exists (copy from `.dev.vars.example`) with a valid token, or the env var is set in-shell | Re-run `npm run register`; expect the `Registered N commands...` success line |
@@ -169,7 +177,8 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 | Param | Where | Current | Safe range | Owner |
 |---|---|---|---|---|
 | `scorePlayer()` leaderboard metric | `src/scoring.ts:44` (boxed "MAKE IT YOURS" comment); design twin `data_explorer/osrs/scoring.py` | raw-XP sum | any monotonic function of `SkillGain[]` — more XP in a skill must never lower score (`test/scoring.test.ts` enforces this) | **Eric** — propose a new metric, never change ranking semantics unilaterally |
-| Auto-post channel + cadence | D1 `settings` table, set via `/config channel` / `/config schedule` (admin-only Discord command) | varies per clan config — read via `SELECT * FROM settings` | `daily` / `weekly` / `off` | **Eric** (via Discord admin command — not a file edit) |
+| Milestone chattiness (`milestones_mode`) | **D1 `settings`, live via `/config milestones`** (admin Discord command — no redeploy). The mode → filter mapping is `shouldAnnounceMilestone(m, mode)` in `src/milestones.ts` | `all` (default when unset) | `all` / `big` / `off` — a TASTE call, not correctness (`test/milestones.test.ts` pins the mapping) | **Admins (Eric/Stevie)** via `/config`. Cron records every processed milestone, so changing modes never floods history |
+| Auto-post channel + cadence | D1 `settings` table, set via `/config channel` / `/config schedule` (admin-only Discord command) | varies per clan config — read via `SELECT * FROM settings` or `/config show` | `daily` / `weekly` / `off` | **Admins (Eric/Stevie)** via Discord command — not a file edit |
 | Cron time | `wrangler.jsonc` `triggers.crons` | `"0 8 * * *"` (08:00 UTC) | any valid cron string; keep once-daily | agent (mechanical — redeploy required after changing) |
 | WOM politeness delay between players | `src/index.ts` `runDailySnapshot`, ~line 300, `setTimeout(r, 300)` | 300ms | do not shrink — WOM asks for polite, identifiable usage (also see `src/wom.ts` `USER_AGENT`) | agent, but treat as a floor not a target |
 | Leaderboard/drops display cap | `src/index.ts` `boardLines(ranked, limit = 15)` line 61; `/drops` handler `.slice(0, 15)` line 258 | 15 | cosmetic — any positive integer | agent |
@@ -226,3 +235,12 @@ Update this playbook in the SAME change as any operation change.
 - 2026-07-04 — initial playbook created (Fable-week Track 5), grounded against
   README.md, wrangler.jsonc, schema.sql, src/*.ts, scripts/register.mjs,
   test/scoring.test.ts, and AUTOMATION.md L101.
+- 2026-07-08 — **zero-install feature batch** (Eric-picked): milestone
+  announcements (`src/milestones.ts` + `announced_milestones` table + nightly
+  achievements fetch in `runDailySnapshot`), and `/boss` + `/clues` leaderboards
+  (`boss_kc`/`activity_score` tables + `handleBoss`/`handleClues`). New public
+  message format = the "🎉 Milestones!" nightly embed (Eric-approved). New tuning
+  knob `shouldAnnounceMilestone` (§5). Deploy order: apply schema (OP-4) → deploy
+  (OP-2) → re-register 9 commands (OP-3). First cron post-deploy seeds milestones
+  silently (§4). Deferred, still pending Eric: weekly SOTW (needs a WOM group +
+  verification code as a secret), Dink named drops, `/ask`.

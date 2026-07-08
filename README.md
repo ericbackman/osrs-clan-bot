@@ -19,6 +19,11 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 - **Tracks rare drops** by watching each player's Collection Log count (no plugin
   needed) — announces "new rare drops!" overnight and ranks who's pulled the most
   uniques. It knows a rare drop *happened*, not which item.
+- **Celebrates milestones** — the morning after someone hits a 99, maxes, crosses
+  100M/200M XP, or clears a boss-KC milestone, the bot shouts it out (via Wise Old
+  Man's achievements). Which milestones are "worth a ping" is a tunable filter.
+- **Ranks PvM & clues** — `/boss` for kill-count races (all bosses or one) and
+  `/clues` for clue-scroll caskets, both from the stats WOM already returns.
 - **Auto-posts** the weekly board to a channel you choose, on the cadence you set.
 - **Introduces itself**: the first time it's used in a server it drops a short
   "here's what I do" note in that channel, and `/help` shows it any time.
@@ -32,8 +37,10 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 | `/iam <rsn>` | anyone | link your Discord to your RSN |
 | `/leaderboard [day\|week\|month] [skill]` | anyone | the XP gains race |
 | `/drops [day\|week\|month]` | anyone | rare-drop (collection log) leaderboard |
+| `/boss [name] [day\|week\|month]` | anyone | PvM kill-count race (all bosses, or one) |
+| `/clues [tier] [day\|week\|month]` | anyone | clue-scroll casket race |
 | `/stats <rsn \| @member>` | anyone | a player's current levels & XP |
-| `/config channel #channel` · `schedule daily\|weekly\|off` | admin | auto-post target & cadence |
+| `/config show` · `channel #channel` · `schedule daily\|weekly\|off` · `milestones all\|big\|off` | admin | live settings — no redeploy |
 
 > Gains need a baseline, so `/leaderboard` fills in after the **second** nightly
 > snapshot. `/track add` grabs a first snapshot immediately, so `/stats` works
@@ -45,9 +52,10 @@ A picks-worker-style Cloudflare Worker:
 
 ```
 src/discord.ts   Ed25519 request verification, REST helpers, constants
-src/wom.ts       Wise Old Man client (update + fetch a player)  ← data source
-src/store.ts     D1 query layer (settings, players, snapshots, skill_xp)
-src/scoring.ts   leaderboard ranking — the one knob that's yours to tune
+src/wom.ts       Wise Old Man client (player, bosses, activities, achievements)  ← data source
+src/store.ts     D1 query layer (settings, players, snapshots, skill_xp, boss_kc, activity_score, milestones)
+src/scoring.ts   leaderboard ranking — a knob that's yours to tune
+src/milestones.ts  which achievements are "worth a ping" — a second tunable knob
 src/index.ts     fetch() + scheduled() entry points, command routing, the welcome
 scripts/register.mjs   slash-command registration
 schema.sql       D1 tables

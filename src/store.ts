@@ -19,6 +19,17 @@ export interface SnapshotRow {
   collog: number | null;
 }
 
+/** A per-player "gained N of something over a window" row, best-first. */
+export interface GainRow {
+  rsn: string;
+  displayName: string;
+  discordUserId: string | null;
+  gained: number;
+}
+
+/** Sentinel milestone row marking "we've seeded this player" (see schema.sql). */
+export const SEEDED = "__seeded__";
+
 /** OSRS names are case-insensitive and treat spaces/underscores alike. */
 export function canonicalRsn(name: string): string {
   return name.trim().toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
@@ -143,15 +154,24 @@ export class Store {
       )
       .bind(rsn, capturedAt, p.overallXp, p.overallLevel, p.ehp, p.collog)
       .run();
-    if ((res.meta.changes ?? 0) === 0) return; // duplicate capture; skills already stored
+    if ((res.meta.changes ?? 0) === 0) return; // duplicate capture; children already stored
 
     const snapshotId = res.meta.last_row_id as number;
-    const stmt = this.db.prepare(
+    const skillStmt = this.db.prepare(
       "INSERT OR REPLACE INTO skill_xp(snapshot_id, skill, level, xp) VALUES(?, ?, ?, ?)",
     );
-    await this.db.batch(
-      p.skills.map((s) => stmt.bind(snapshotId, s.skill, s.level, s.xp)),
+    const bossStmt = this.db.prepare(
+      "INSERT OR REPLACE INTO boss_kc(snapshot_id, boss, kills) VALUES(?, ?, ?)",
     );
+    const actStmt = this.db.prepare(
+      "INSERT OR REPLACE INTO activity_score(snapshot_id, activity, score) VALUES(?, ?, ?)",
+    );
+    const stmts = [
+      ...p.skills.map((s) => skillStmt.bind(snapshotId, s.skill, s.level, s.xp)),
+      ...p.bosses.map((b) => bossStmt.bind(snapshotId, b.boss, b.kills)),
+      ...p.activities.map((a) => actStmt.bind(snapshotId, a.activity, a.score)),
+    ];
+    if (stmts.length) await this.db.batch(stmts);
   }
 
   /**
@@ -323,5 +343,151 @@ export class Store {
     }
     out.sort((a, b) => b.gained - a.gained);
     return out;
+  }
+
+  // ── boss / activity gains (same window-diff shape as gains, keyed by metric) ──
+
+  /** Turn per-player end/start values into positive gains, joined to players. */
+  private async diffGains(
+    end: { rsn: string; val: number }[],
+    start: { rsn: string; val: number }[],
+  ): Promise<GainRow[]> {
+    const startBy = new Map<string, number>(
+      start.map((r): [string, number] => [r.rsn, r.val]),
+    );
+    const players = new Map<string, PlayerRow>(
+      (await this.listPlayers()).map((p): [string, PlayerRow] => [p.rsn, p]),
+    );
+    const out: GainRow[] = [];
+    for (const e of end) {
+      const before = startBy.get(e.rsn);
+      const p = players.get(e.rsn);
+      if (before === undefined || !p) continue; // no baseline for this player/metric
+      const gained = e.val - before;
+      if (gained <= 0) continue;
+      out.push({
+        rsn: e.rsn,
+        displayName: p.display_name,
+        discordUserId: p.discord_user_id,
+        gained,
+      });
+    }
+    out.sort((a, b) => b.gained - a.gained);
+    return out;
+  }
+
+  /**
+   * Per-player gains for one metric in a keyed child table (boss_kc/activity_score)
+   * since `cutoffIso`. "End" = latest value per player; "start" = latest at/before
+   * the cutoff. Same MAX(captured_at) idiom as gainsSince. `table`/columns are
+   * internal constants (never user input); only `key` is bound.
+   */
+  private async keyedGainsSince(
+    cutoffIso: string,
+    table: "boss_kc" | "activity_score",
+    keyCol: string,
+    valCol: string,
+    key: string,
+  ): Promise<GainRow[]> {
+    const end = (
+      await this.db
+        .prepare(
+          `SELECT s.rsn AS rsn, t.${valCol} AS val, MAX(s.captured_at) AS captured_at ` +
+            `FROM snapshots s JOIN ${table} t ON t.snapshot_id = s.snapshot_id ` +
+            `WHERE t.${keyCol} = ? AND t.${valCol} IS NOT NULL GROUP BY s.rsn`,
+        )
+        .bind(key)
+        .all<{ rsn: string; val: number }>()
+    ).results;
+    const start = (
+      await this.db
+        .prepare(
+          `SELECT s.rsn AS rsn, t.${valCol} AS val, MAX(s.captured_at) AS captured_at ` +
+            `FROM snapshots s JOIN ${table} t ON t.snapshot_id = s.snapshot_id ` +
+            `WHERE t.${keyCol} = ? AND s.captured_at <= ? AND t.${valCol} IS NOT NULL GROUP BY s.rsn`,
+        )
+        .bind(key, cutoffIso)
+        .all<{ rsn: string; val: number }>()
+    ).results;
+    return this.diffGains(end, start);
+  }
+
+  /** KC gained for one boss (WOM metric key) since the cutoff, best-first. */
+  bossKcGainsSince(cutoffIso: string, boss: string): Promise<GainRow[]> {
+    return this.keyedGainsSince(cutoffIso, "boss_kc", "boss", "kills", boss);
+  }
+
+  /** Score gained for one activity (e.g. a clue tier) since the cutoff, best-first. */
+  activityGainsSince(cutoffIso: string, activity: string): Promise<GainRow[]> {
+    return this.keyedGainsSince(cutoffIso, "activity_score", "activity", "score", activity);
+  }
+
+  /**
+   * Total boss KC gained across ALL bosses per player since the cutoff. Diffs
+   * per (player, boss) and sums the positive deltas — a boss present at end but
+   * with no baseline is skipped so it can't over-count.
+   */
+  async totalBossGainsSince(cutoffIso: string): Promise<GainRow[]> {
+    const end = (
+      await this.db
+        .prepare(
+          "SELECT s.rsn AS rsn, t.boss AS boss, t.kills AS kills, MAX(s.captured_at) AS captured_at " +
+            "FROM snapshots s JOIN boss_kc t ON t.snapshot_id = s.snapshot_id " +
+            "WHERE t.kills IS NOT NULL GROUP BY s.rsn, t.boss",
+        )
+        .all<{ rsn: string; boss: string; kills: number }>()
+    ).results;
+    const start = (
+      await this.db
+        .prepare(
+          "SELECT s.rsn AS rsn, t.boss AS boss, t.kills AS kills, MAX(s.captured_at) AS captured_at " +
+            "FROM snapshots s JOIN boss_kc t ON t.snapshot_id = s.snapshot_id " +
+            "WHERE s.captured_at <= ? AND t.kills IS NOT NULL GROUP BY s.rsn, t.boss",
+        )
+        .bind(cutoffIso)
+        .all<{ rsn: string; boss: string; kills: number }>()
+    ).results;
+
+    const startBy = new Map<string, number>();
+    for (const r of start) startBy.set(`${r.rsn}|${r.boss}`, r.kills);
+    const gainedByRsn = new Map<string, number>();
+    for (const r of end) {
+      const before = startBy.get(`${r.rsn}|${r.boss}`);
+      if (before === undefined) continue; // no baseline for this boss
+      const g = r.kills - before;
+      if (g > 0) gainedByRsn.set(r.rsn, (gainedByRsn.get(r.rsn) ?? 0) + g);
+    }
+
+    const players = new Map<string, PlayerRow>(
+      (await this.listPlayers()).map((p): [string, PlayerRow] => [p.rsn, p]),
+    );
+    const out: GainRow[] = [];
+    for (const [rsn, gained] of gainedByRsn) {
+      const p = players.get(rsn);
+      if (!p) continue;
+      out.push({ rsn, displayName: p.display_name, discordUserId: p.discord_user_id, gained });
+    }
+    out.sort((a, b) => b.gained - a.gained);
+    return out;
+  }
+
+  // ── milestones (dedup so each WOM achievement is announced at most once) ──────
+
+  /** All milestone names already processed for a player (includes SEEDED sentinel). */
+  async getSeenMilestones(rsn: string): Promise<Set<string>> {
+    const { results } = await this.db
+      .prepare("SELECT milestone FROM announced_milestones WHERE rsn = ?")
+      .bind(rsn)
+      .all<{ milestone: string }>();
+    return new Set(results.map((r) => r.milestone));
+  }
+
+  /** Record milestone names as processed (INSERT OR IGNORE — re-recording is a no-op). */
+  async recordMilestones(rsn: string, names: string[], at: string): Promise<void> {
+    if (!names.length) return;
+    const stmt = this.db.prepare(
+      "INSERT OR IGNORE INTO announced_milestones(rsn, milestone, announced_at) VALUES(?, ?, ?)",
+    );
+    await this.db.batch(names.map((n) => stmt.bind(rsn, n, at)));
   }
 }

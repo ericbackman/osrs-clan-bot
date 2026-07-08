@@ -14,21 +14,28 @@ export interface Milestone {
 /**
  * How chatty milestone announcements are — set live by admins via
  * `/config milestones` (stored in D1 as `milestones_mode`), no redeploy needed.
- *   • "all" — everything except collection-log (that's /drops) and "Base N Stats".
- *   • "big" — headline only: 99s, Maxed, 100m/200m XP, combat. No boss-KC spam
- *             (a grinder crosses KC thresholds constantly — that lives on /boss).
- *   • "off" — announce nothing (the cron still records milestones so re-enabling
- *             later never floods the channel with history).
+ *   • "all" — life milestones (99s, Maxed, 100m/200m XP, combat) AND boss-KC
+ *             milestones every `boss_kc_interval` kills (see below).
+ *   • "big" — life milestones only, no boss-KC.
+ *   • "off" — announce nothing (the cron still records life milestones so
+ *             re-enabling later never floods the channel with history).
  */
 export type MilestoneMode = "all" | "big" | "off";
 
 /**
- * Decide whether a freshly-earned milestone is worth pinging the whole clan for.
- * WOM already curates out the noise (no "level 50 Mining" achievement exists), so
- * this is a VOLUME/taste call, not a correctness one — which is why it's an admin
- * setting (`mode`) rather than hardcoded. The cron records every milestone it
- * PROCESSES (announced or not), so changing the mode never retroactively floods
- * the channel — only milestones earned after the change are affected.
+ * Default kills-per-boss-KC-announcement. WOM's own achievements only fire at
+ * 10/50/100/200/500/1000/5000, so a not-yet-maxed clan gets nothing between 200
+ * and 500 — we compute our own from the `boss_kc` snapshots instead, at whatever
+ * interval admins set via `/config bosskc` (this is just the fallback).
+ */
+export const DEFAULT_BOSS_KC_INTERVAL = 100;
+
+/**
+ * Decide whether a freshly-earned WOM *life* milestone is worth a clan ping.
+ * Boss-KC milestones are handled separately (per-interval, from our own KC data),
+ * so WOM's "N Boss kills" achievements are always skipped here to avoid dupes and
+ * their coarse thresholds. The cron records every milestone it PROCESSES
+ * (announced or not), so changing the mode never retroactively floods the channel.
  */
 export function shouldAnnounceMilestone(m: Milestone, mode: MilestoneMode = "all"): boolean {
   if (mode === "off") return false;
@@ -37,8 +44,28 @@ export function shouldAnnounceMilestone(m: Milestone, mode: MilestoneMode = "all
     return false; // covered by /drops
   }
   if (name.startsWith("base ")) return false; // "Base 90 Stats" — less flex than a 99
-  if (mode === "big") return !name.includes("kills"); // headline only; boss KC -> /boss
-  return true; // "all"
+  if (name.includes("kills")) return false; // boss KC handled by our per-interval tracker
+  return true; // 99s, Maxed, 100m/200m, combat — in both "all" and "big"
+}
+
+/**
+ * The highest multiple of `interval` newly reached going from `prev` to `curr`
+ * kills; null if none was crossed. E.g. (90 -> 140, 100) = 100; (180 -> 320, 100)
+ * = 300 (announce the top one, not every century in the jump); (100 -> 150, 100)
+ * = null (already had 100). Pure + tested — this is the boss-KC milestone rule.
+ */
+export function crossedMultiple(prev: number, curr: number, interval: number): number | null {
+  if (interval <= 0 || curr <= prev) return null;
+  const reached = Math.floor(curr / interval) * interval;
+  return reached > prev && reached >= interval ? reached : null;
+}
+
+/** Prettify a WOM boss metric key: "commander_zilyana" -> "Commander Zilyana". */
+export function prettyBoss(metric: string): string {
+  return metric
+    .split("_")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
 }
 
 /** Emoji that fits the flavour of a milestone, for the announcement line. */

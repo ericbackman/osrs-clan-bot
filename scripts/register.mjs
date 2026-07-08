@@ -208,12 +208,31 @@ const commands = [
           {
             type: 3,
             name: "mode",
-            description: "all = everything; big = headline only; off = none",
+            description: "all = life + boss KC; big = life only; off = none",
             required: true,
             choices: [
               { name: "all", value: "all" },
               { name: "big", value: "big" },
               { name: "off", value: "off" },
+            ],
+          },
+        ],
+      },
+      {
+        type: 1,
+        name: "bosskc",
+        description: "Announce a boss milestone every N kills (mode 'all')",
+        options: [
+          {
+            type: 4,
+            name: "interval",
+            description: "Kills between boss milestones (lower = more shout-outs)",
+            required: true,
+            choices: [
+              { name: "25", value: 25 },
+              { name: "50", value: 50 },
+              { name: "100", value: 100 },
+              { name: "250", value: 250 },
             ],
           },
         ],

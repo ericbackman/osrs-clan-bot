@@ -177,7 +177,8 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 | Param | Where | Current | Safe range | Owner |
 |---|---|---|---|---|
 | `scorePlayer()` leaderboard metric | `src/scoring.ts:44` (boxed "MAKE IT YOURS" comment); design twin `data_explorer/osrs/scoring.py` | raw-XP sum | any monotonic function of `SkillGain[]` — more XP in a skill must never lower score (`test/scoring.test.ts` enforces this) | **Eric** — propose a new metric, never change ranking semantics unilaterally |
-| Milestone chattiness (`milestones_mode`) | **D1 `settings`, live via `/config milestones`** (admin Discord command — no redeploy). The mode → filter mapping is `shouldAnnounceMilestone(m, mode)` in `src/milestones.ts` | `all` (default when unset) | `all` / `big` / `off` — a TASTE call, not correctness (`test/milestones.test.ts` pins the mapping) | **Admins (Eric/Stevie)** via `/config`. Cron records every processed milestone, so changing modes never floods history |
+| Milestone chattiness (`milestones_mode`) | **D1 `settings`, live via `/config milestones`** (admin Discord command — no redeploy). Mode → filter is `shouldAnnounceMilestone(m, mode)` in `src/milestones.ts` | `all` (default when unset) | `all` = life milestones (99s/maxes/100m/200m/combat) + boss-KC; `big` = life only; `off` = none (`test/milestones.test.ts` pins the mapping) | **Admins (Eric/Stevie)** via `/config`. Cron records every processed WOM milestone, so changing modes never floods history |
+| Boss-KC milestone interval (`boss_kc_interval`) | **D1 `settings`, live via `/config bosskc`** (admin — no redeploy). Computed from `boss_kc` snapshots via `crossedMultiple()` in `src/milestones.ts`, NOT WOM achievements (whose thresholds jump 200→500→1000) | `100` (default when unset/invalid) | any positive int; UI offers 25/50/100/250 — lower = more shout-outs. Only fires when `milestones_mode='all'` | **Admins (Eric/Stevie)** via `/config`. Per-night diff, so each crossing announces exactly once (no dedup table) |
 | Auto-post channel + cadence | D1 `settings` table, set via `/config channel` / `/config schedule` (admin-only Discord command) | varies per clan config — read via `SELECT * FROM settings` or `/config show` | `daily` / `weekly` / `off` | **Admins (Eric/Stevie)** via Discord command — not a file edit |
 | Cron time | `wrangler.jsonc` `triggers.crons` | `"0 8 * * *"` (08:00 UTC) | any valid cron string; keep once-daily | agent (mechanical — redeploy required after changing) |
 | WOM politeness delay between players | `src/index.ts` `runDailySnapshot`, ~line 300, `setTimeout(r, 300)` | 300ms | do not shrink — WOM asks for polite, identifiable usage (also see `src/wom.ts` `USER_AGENT`) | agent, but treat as a floor not a target |
@@ -244,3 +245,12 @@ Update this playbook in the SAME change as any operation change.
   (OP-2) → re-register 9 commands (OP-3). First cron post-deploy seeds milestones
   silently (§4). Deferred, still pending Eric: weekly SOTW (needs a WOM group +
   verification code as a secret), Dink named drops, `/ask`.
+- 2026-07-08 — **boss-KC milestones + live tuning** (Stevie feedback: not maxed,
+  wanted per-100-KC shout-outs; WOM achievements only fire at 10/50/100/200/500/
+  1k/5k). Boss-KC milestones now computed from `boss_kc` snapshots via
+  `crossedMultiple()` (not WOM), at a live-tunable interval (`/config bosskc`,
+  default 100). WOM boss-KC achievements are now suppressed in `shouldAnnounceMilestone`
+  to avoid dupes. `all` mode = life + boss-KC; `big` = life only. No schema/table
+  change (reuses `boss_kc`); still 9 top-level commands. Deploy = redeploy + (no new
+  register needed unless the `/config bosskc` subcommand is being added — it is, so
+  re-register).

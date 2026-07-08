@@ -471,6 +471,41 @@ export class Store {
     return out;
   }
 
+  /**
+   * A player's boss KC from their two most recent snapshots, for per-night
+   * milestone crossings (e.g. "hit 300 Zulrah"). Returns null until they have
+   * two snapshots. Unlike the window methods above, this is always "last night
+   * vs tonight" — so a crossing is naturally announced exactly once.
+   */
+  async bossKcLastTwo(
+    rsn: string,
+  ): Promise<{ curr: Map<string, number>; prev: Map<string, number> } | null> {
+    const snaps = (
+      await this.db
+        .prepare(
+          "SELECT snapshot_id FROM snapshots WHERE rsn = ? ORDER BY captured_at DESC LIMIT 2",
+        )
+        .bind(rsn)
+        .all<{ snapshot_id: number }>()
+    ).results;
+    if (snaps.length < 2) return null;
+    const currId = snaps[0].snapshot_id;
+    const prevId = snaps[1].snapshot_id;
+    const rows = (
+      await this.db
+        .prepare(
+          "SELECT snapshot_id AS sid, boss, kills FROM boss_kc " +
+            "WHERE snapshot_id IN (?, ?) AND kills IS NOT NULL",
+        )
+        .bind(currId, prevId)
+        .all<{ sid: number; boss: string; kills: number }>()
+    ).results;
+    const curr = new Map<string, number>();
+    const prev = new Map<string, number>();
+    for (const r of rows) (r.sid === currId ? curr : prev).set(r.boss, r.kills);
+    return { curr, prev };
+  }
+
   // ── milestones (dedup so each WOM achievement is announced at most once) ──────
 
   /** All milestone names already processed for a player (includes SEEDED sentinel). */

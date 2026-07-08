@@ -19,9 +19,11 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 - **Tracks rare drops** by watching each player's Collection Log count (no plugin
   needed) — announces "new rare drops!" overnight and ranks who's pulled the most
   uniques. It knows a rare drop *happened*, not which item.
-- **Celebrates milestones** — the morning after someone hits a 99, maxes, crosses
-  100M/200M XP, or clears a boss-KC milestone, the bot shouts it out (via Wise Old
-  Man's achievements). Which milestones are "worth a ping" is a tunable filter.
+- **Celebrates milestones** — the morning after someone hits a 99, maxes, or
+  crosses 100M/200M XP (via Wise Old Man's achievements), plus a shout every N
+  boss kills (computed from our own KC snapshots, since WOM's thresholds are too
+  coarse for a not-yet-maxed clan). Chattiness + the KC interval are live admin
+  settings — `/config milestones` and `/config bosskc`.
 - **Ranks PvM & clues** — `/boss` for kill-count races (all bosses or one) and
   `/clues` for clue-scroll caskets, both from the stats WOM already returns.
 - **Auto-posts** the weekly board to a channel you choose, on the cadence you set.
@@ -40,7 +42,7 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 | `/boss [name] [day\|week\|month]` | anyone | PvM kill-count race (all bosses, or one) |
 | `/clues [tier] [day\|week\|month]` | anyone | clue-scroll casket race |
 | `/stats <rsn \| @member>` | anyone | a player's current levels & XP |
-| `/config show` · `channel #channel` · `schedule daily\|weekly\|off` · `milestones all\|big\|off` | admin | live settings — no redeploy |
+| `/config show` · `channel #channel` · `schedule daily\|weekly\|off` · `milestones all\|big\|off` · `bosskc 25\|50\|100\|250` | admin | live settings — no redeploy |
 
 > Gains need a baseline, so `/leaderboard` fills in after the **second** nightly
 > snapshot. `/track add` grabs a first snapshot immediately, so `/stats` works

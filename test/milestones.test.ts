@@ -1,19 +1,31 @@
 import { describe, it, expect } from "vitest";
 
-import { shouldAnnounceMilestone, milestoneEmoji, type Milestone } from "../src/milestones";
+import {
+  shouldAnnounceMilestone,
+  milestoneEmoji,
+  crossedMultiple,
+  prettyBoss,
+  type Milestone,
+} from "../src/milestones";
 import { parseAchievements, parsePlayer } from "../src/wom";
 
 function milestone(name: string, metric = "overall", threshold = 0): Milestone {
   return { name, metric, threshold, createdAt: "2026-07-08T00:00:00.000Z" };
 }
 
-describe("shouldAnnounceMilestone — default (all) mode", () => {
-  it("announces skill 99s, maxes, 100m/200m, and boss KC", () => {
-    expect(shouldAnnounceMilestone(milestone("99 Slayer", "slayer"))).toBe(true);
-    expect(shouldAnnounceMilestone(milestone("Maxed Overall", "overall"))).toBe(true);
-    expect(shouldAnnounceMilestone(milestone("100m Mining", "mining"))).toBe(true);
-    expect(shouldAnnounceMilestone(milestone("200m Magic", "magic"))).toBe(true);
-    expect(shouldAnnounceMilestone(milestone("500 Zulrah kills", "zulrah", 500))).toBe(true);
+describe("shouldAnnounceMilestone — WOM life milestones", () => {
+  it("announces 99s, maxes, 100m/200m in both 'all' and 'big'", () => {
+    for (const mode of ["all", "big"] as const) {
+      expect(shouldAnnounceMilestone(milestone("99 Slayer", "slayer"), mode)).toBe(true);
+      expect(shouldAnnounceMilestone(milestone("Maxed Overall", "overall"), mode)).toBe(true);
+      expect(shouldAnnounceMilestone(milestone("100m Mining", "mining"), mode)).toBe(true);
+      expect(shouldAnnounceMilestone(milestone("200m Magic", "magic"), mode)).toBe(true);
+    }
+  });
+
+  it("never announces WOM boss-KC achievements (boss KC is our own per-interval path)", () => {
+    expect(shouldAnnounceMilestone(milestone("500 Zulrah kills", "zulrah", 500), "all")).toBe(false);
+    expect(shouldAnnounceMilestone(milestone("500 Zulrah kills", "zulrah", 500), "big")).toBe(false);
   });
 
   it("skips collection-log milestones (covered by /drops)", () => {
@@ -26,21 +38,37 @@ describe("shouldAnnounceMilestone — default (all) mode", () => {
     expect(shouldAnnounceMilestone(milestone("Base 90 Stats", "overall"))).toBe(false);
     expect(shouldAnnounceMilestone(milestone("Base 70 Stats (Pre-Sailing)", "overall"))).toBe(false);
   });
-});
 
-describe("shouldAnnounceMilestone — admin modes (set live via /config)", () => {
   it("'off' announces nothing", () => {
     expect(shouldAnnounceMilestone(milestone("99 Slayer", "slayer"), "off")).toBe(false);
     expect(shouldAnnounceMilestone(milestone("Maxed Overall", "overall"), "off")).toBe(false);
   });
+});
 
-  it("'big' keeps headline milestones but drops boss-KC spam", () => {
-    expect(shouldAnnounceMilestone(milestone("99 Slayer", "slayer"), "big")).toBe(true);
-    expect(shouldAnnounceMilestone(milestone("Maxed Overall", "overall"), "big")).toBe(true);
-    expect(shouldAnnounceMilestone(milestone("100m Mining", "mining"), "big")).toBe(true);
-    expect(shouldAnnounceMilestone(milestone("500 Zulrah kills", "zulrah", 500), "big")).toBe(false);
-    // still skips the always-off categories
-    expect(shouldAnnounceMilestone(milestone("Base 90 Stats", "overall"), "big")).toBe(false);
+describe("crossedMultiple — boss-KC milestone rule", () => {
+  it("fires on the highest interval newly reached", () => {
+    expect(crossedMultiple(90, 140, 100)).toBe(100); // crossed 100
+    expect(crossedMultiple(180, 320, 100)).toBe(300); // jumped past 200 -> announce top (300)
+    expect(crossedMultiple(0, 250, 100)).toBe(200);
+  });
+
+  it("returns null when no new multiple is reached", () => {
+    expect(crossedMultiple(100, 150, 100)).toBeNull(); // already had 100
+    expect(crossedMultiple(95, 99, 100)).toBeNull(); // not there yet
+    expect(crossedMultiple(300, 300, 100)).toBeNull(); // no change
+    expect(crossedMultiple(0, 40, 50)).toBeNull(); // under one interval
+  });
+
+  it("respects a custom interval (e.g. 25)", () => {
+    expect(crossedMultiple(40, 60, 25)).toBe(50);
+    expect(crossedMultiple(50, 74, 25)).toBeNull();
+  });
+});
+
+describe("prettyBoss", () => {
+  it("title-cases a WOM metric key", () => {
+    expect(prettyBoss("zulrah")).toBe("Zulrah");
+    expect(prettyBoss("commander_zilyana")).toBe("Commander Zilyana");
   });
 });
 

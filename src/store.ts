@@ -35,6 +35,39 @@ export function canonicalRsn(name: string): string {
   return name.trim().toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
 }
 
+export interface SeedEntry {
+  rsn: string; // canonical
+  displayName: string; // spelling to show (as written in the seed)
+  discordUserId: string | null;
+}
+
+/**
+ * Parse the SEED_PLAYERS var into roster entries — the declarative source for
+ * the clan's core members, so the roster self-heals if the players table is
+ * ever emptied (fresh/wiped D1, wrong-env write, manual mistake). Format:
+ * comma- or newline-separated, each `RSN` or `RSN=discordId` (`:` also works).
+ * OSRS names never contain `=`/`:`/`,`, so those are unambiguous separators.
+ * Blanks are skipped and duplicates (by canonical RSN) collapse to the first
+ * spelling. Pure (no IO) so it's unit-testable against fixtures.
+ */
+export function parseSeedRoster(raw: string | null | undefined): SeedEntry[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: SeedEntry[] = [];
+  for (const part of raw.split(/[,\n]/)) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const link = trimmed.match(/^(.*?)\s*[=:]\s*(\d+)\s*$/); // "RSN=id" / "RSN:id"
+    const name = (link ? link[1] : trimmed).trim();
+    if (!name) continue;
+    const rsn = canonicalRsn(name);
+    if (seen.has(rsn)) continue;
+    seen.add(rsn);
+    out.push({ rsn, displayName: name, discordUserId: link ? link[2] : null });
+  }
+  return out;
+}
+
 export class Store {
   constructor(private db: D1Database) {}
 
@@ -129,6 +162,40 @@ export class Store {
         .first<PlayerRow>();
     }
     return null;
+  }
+
+  /**
+   * Reconcile a declarative seed roster into `players` (idempotent). Inserts any
+   * missing seeded player and back-fills a Discord link — but the merge policy is
+   * deliberately non-destructive: it NEVER removes a player you added via
+   * `/track add`, and NEVER overwrites a Discord link a member set with `/iam`
+   * (the WHERE ... IS NULL guard). The seed only ever *adds*. Returns how many
+   * players were newly inserted. Cheap to run repeatedly — a no-op once present.
+   */
+  async ensureSeedPlayers(entries: SeedEntry[], addedAt: string): Promise<number> {
+    if (!entries.length) return 0;
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO players(rsn, display_name, discord_user_id, added_by, added_at) " +
+        "VALUES(?, ?, ?, 'seed', ?)",
+    );
+    const results = await this.db.batch(
+      entries.map((e) => insert.bind(e.rsn, e.displayName, e.discordUserId, addedAt)),
+    );
+    const added = results.reduce(
+      (n, r) => n + ((r.meta.changes ?? 0) > 0 ? 1 : 0),
+      0,
+    );
+
+    // Link seeded players that carry a Discord id but aren't linked yet. The
+    // `IS NULL` guard is the merge policy: a member's own /iam link always wins.
+    const links = entries.filter((e) => e.discordUserId);
+    if (links.length) {
+      const update = this.db.prepare(
+        "UPDATE players SET discord_user_id = ? WHERE rsn = ? AND discord_user_id IS NULL",
+      );
+      await this.db.batch(links.map((e) => update.bind(e.discordUserId, e.rsn)));
+    }
+    return added;
   }
 
   // ── snapshots ──────────────────────────────────────────────────────────────

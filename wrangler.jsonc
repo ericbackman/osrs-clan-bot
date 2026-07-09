@@ -24,6 +24,15 @@
   "vars": {
     "DISCORD_APPLICATION_ID": "1520829849244139661",
     "DISCORD_PUBLIC_KEY": "a4369f5e28f68f88235f042eb65d103956af93efcd92f0f974276b2edb9cde02",
-    "GUILD_ID": "690589122833678427"
+    "GUILD_ID": "690589122833678427",
+
+    // Declarative core roster — the bot reconciles these into D1 (INSERT OR
+    // IGNORE) on every command + nightly cron, so the clan survives any DB wipe
+    // and you never re-add people by hand. Comma-separated; each entry is an RSN
+    // or "RSN=discordUserId". Seed only ADDS — /track add extras and /iam links
+    // are never clobbered. RSN-only here on purpose: this repo is PUBLIC, so
+    // Discord IDs (personal) stay out of it — links live in D1 and re-link via
+    // /iam if ever fully wiped. Leave "" to disable.
+    "SEED_PLAYERS": "BodyMeat, IrnmnOfPants, rolf it"
   }
 }

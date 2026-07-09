@@ -16,7 +16,7 @@ import {
   subOption,
   userId,
 } from "./discord";
-import { Store, canonicalRsn, SEEDED, type GainRow, type PlayerRow } from "./store";
+import { Store, canonicalRsn, parseSeedRoster, SEEDED, type GainRow, type PlayerRow } from "./store";
 import * as wom from "./wom";
 import { rankGains, type RankedPlayer } from "./scoring";
 import {
@@ -168,6 +168,23 @@ async function maybeGreet(env: Env, store: Store, interaction: any): Promise<voi
     content: "👋 Thanks for adding me!",
     embeds: [helpEmbed()],
   });
+}
+
+/**
+ * Reconcile the declarative SEED_PLAYERS roster into D1 so the clan's core
+ * members survive any wipe (fresh/reset DB, wrong-env write). Guarded by a
+ * marker: steady-state commands do zero writes — it only reconciles when the
+ * seed string changed or the marker is gone. A wiped DB drops the marker too,
+ * so the roster self-heals on the very next command. Runs off the hot path via
+ * ctx.waitUntil, so it never eats into Discord's 3s interaction deadline. The
+ * nightly cron reconciles unconditionally as a backstop (see runDailySnapshot).
+ */
+async function ensureSeed(env: Env, store: Store): Promise<void> {
+  const raw = env.SEED_PLAYERS?.trim();
+  if (!raw) return;
+  if ((await store.getSetting("seed_applied")) === raw) return;
+  await store.ensureSeedPlayers(parseSeedRoster(raw), new Date().toISOString());
+  await store.setSetting("seed_applied", raw);
 }
 
 // ── command handlers ──────────────────────────────────────────────────────────
@@ -476,6 +493,13 @@ async function collectPlayerMilestones(
 
 async function runDailySnapshot(env: Env): Promise<void> {
   const store = new Store(env.DB);
+  // Self-heal the roster before snapshotting: re-add any seeded player missing
+  // from D1 so tonight's capture covers the whole clan. Unconditional here (the
+  // interaction path is marker-guarded) so even a partial manual delete recovers.
+  await store.ensureSeedPlayers(
+    parseSeedRoster(env.SEED_PLAYERS),
+    new Date().toISOString(),
+  );
   const players = await store.listPlayers();
   const capturedAt = new Date().toISOString();
   const milestoneMode = ((await store.getSetting("milestones_mode")) ?? "all") as MilestoneMode;
@@ -592,6 +616,12 @@ export default {
     const store = new Store(env.DB);
     // First time the bot is used in the server, introduce itself in that channel.
     ctx.waitUntil(maybeGreet(env, store, interaction).catch(() => {}));
+    // Self-heal the roster from SEED_PLAYERS if D1 was ever reset (no-op normally).
+    ctx.waitUntil(
+      ensureSeed(env, store).catch((e) =>
+        console.error(`seed reconcile failed: ${(e as Error).message}`),
+      ),
+    );
     try {
       switch (interaction.data?.name) {
         case "help":

@@ -35,6 +35,13 @@
   D1 is the store. Discord's 3s interaction deadline means commands always answer
   from D1, never call WOM live (exception: `/track add` grabs one immediate
   snapshot — `src/index.ts` `handleTrack`, sub `add`).
+- **Roster self-heal**: the core roster is declared in `SEED_PLAYERS`
+  (`wrangler.jsonc`, RSN-only — public repo) and reconciled into `players`
+  (INSERT OR IGNORE) on every interaction (marker-guarded on the `seed_applied`
+  setting) and unconditionally on the nightly cron — survives a wiped/reset D1
+  with no manual `/track add`. Additive only: never removes `/track add` players
+  or clobbers `/iam` links (`src/store.ts` `ensureSeedPlayers`; `ensureSeed` in
+  `src/index.ts`). See OP-5.
 - **Entry points**: `src/index.ts` `fetch()` (interactions) and `scheduled()`
   (cron) -> `runDailySnapshot()` (~line 288).
 - **Eric's metric**: `scorePlayer()` in `src/scoring.ts` (line 44) ranks the
@@ -158,6 +165,29 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   fix `schema.sql` to `IF NOT EXISTS` form and re-run (safe to re-run in full,
   per file header comment).
 
+### OP-5: Populate or update the seed roster (self-heal source)
+
+- **What it is**: `SEED_PLAYERS` (a `wrangler.jsonc` `vars` string) is the
+  declarative core roster, reconciled into `players` by `ensureSeedPlayers`
+  (`src/store.ts`) — marker-guarded on every interaction (`seed_applied` setting),
+  unconditional on the nightly cron (`runDailySnapshot`). This is what makes an
+  emptied `players` table self-heal. **Seed only ADDS** — never removes
+  `/track add` extras, never overwrites an `/iam` link (`WHERE ... discord_user_id
+  IS NULL` guard).
+- **Trigger**: first deploy of this feature; whenever the core roster changes for
+  good; or to make the roster survive a future D1 reset.
+- **Populate from the LIVE roster (no retyping)**:
+  ```bash
+  npx wrangler d1 execute osrs_clan --remote --command "SELECT group_concat(display_name || CASE WHEN discord_user_id IS NOT NULL THEN '=' || discord_user_id ELSE '' END, ', ') AS seed_players FROM players"
+  ```
+  Paste the value into `SEED_PLAYERS` in `wrangler.jsonc`, then deploy (OP-2).
+  **Repo is PUBLIC** — keep it RSN-only (Discord IDs are personal; links live in
+  D1 and re-link via `/iam` if ever fully wiped).
+- **Verify**: after a command/cron, `SELECT value FROM settings WHERE key='seed_applied'`
+  equals the `SEED_PLAYERS` string; `/track list` shows everyone.
+- **If it fails**: a player didn't seed → check its entry is `RSN` or
+  `RSN=discordId` (digits-only id). `SEED_PLAYERS=""` disables the feature.
+
 ## 4. Failure modes & recovery
 
 | Symptom | Cause | Fix | Verify |
@@ -168,6 +198,7 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 | A player's milestone announces twice | Dedup relies on stable WOM achievement `name` strings keyed by canonical `rsn`; a mid-flight rsn change could re-seed under a new key | Rare — confirm the `rsn` in `players` matches what `announced_milestones` used; do not delete rows to "fix" (that re-announces). Escalate if it recurs | Each `(rsn, milestone)` pair appears once in `announced_milestones` (PRIMARY KEY enforces it) |
 | No weekly board posted | `auto-post skipped: ...` logged, OR `schedule='weekly'` and today isn't Monday UTC (expected, not a bug), OR `schedule='off'` | Check logs for the skip message; check `isMonday` logic only applies when `schedule='weekly'` | Settings query + `new Date().getUTCDay() === 1` check |
 | `/leaderboard` or `/drops` says "not enough history" for a newly-added roster | Gains need **two** nightly snapshots as a baseline — expected for brand-new players (README callout) | None needed — wait for the next nightly cron | `/stats <rsn>` should already work (immediate snapshot on `/track add`); `/leaderboard` works after night 2 |
+| Roster empty / players vanished after a redeploy or DB reset | The `players` table was emptied (fresh/reset D1, or writes went to a local `wrangler dev` DB) — **not** caused by `wrangler deploy`, which never touches D1 | Self-heals from `SEED_PLAYERS`: run any command (marker-guarded) or wait for the nightly cron (unconditional). If `SEED_PLAYERS` is empty, populate it (OP-5). Restores roster + links, **not** lost snapshot history | `SELECT COUNT(*) FROM players` matches the roster; `/track list` shows everyone; `/leaderboard` recovers after two fresh snapshots |
 | `npm run register` exits 1 with a config message | `DISCORD_TOKEN`/`DISCORD_APPLICATION_ID`/`GUILD_ID` didn't resolve | Confirm `.dev.vars` exists (copy from `.dev.vars.example`) with a valid token, or the env var is set in-shell | Re-run `npm run register`; expect the `Registered N commands...` success line |
 | Interactions return HTTP 401 / Discord shows "app didn't respond" | `DISCORD_PUBLIC_KEY` mismatch, or the Discord bot token was rotated/expired without updating the Worker secret | Confirm `DISCORD_PUBLIC_KEY` in `wrangler.jsonc` matches the Developer Portal; if the token itself is bad, this is a stop-condition (section 6) — token rotation is Eric's | `/help` responds successfully in Discord after the secret is corrected |
 | A `scorePlayer`/`rankGains` edit breaks monotonicity | More XP in a skill lowered a player's score | `npm test` — `test/scoring.test.ts` "monotonicity" case goes red | Fix the scoring function until `npm test` is green; never edit the test to force a pass |
@@ -183,6 +214,8 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 | Cron time | `wrangler.jsonc` `triggers.crons` | `"0 8 * * *"` (08:00 UTC) | any valid cron string; keep once-daily | agent (mechanical — redeploy required after changing) |
 | WOM politeness delay between players | `src/index.ts` `runDailySnapshot`, ~line 300, `setTimeout(r, 300)` | 300ms | do not shrink — WOM asks for polite, identifiable usage (also see `src/wom.ts` `USER_AGENT`) | agent, but treat as a floor not a target |
 | Leaderboard/drops display cap | `src/index.ts` `boardLines(ranked, limit = 15)` line 61; `/drops` handler `.slice(0, 15)` line 258 | 15 | cosmetic — any positive integer | agent |
+| Core seed roster | `wrangler.jsonc` `vars.SEED_PLAYERS`; reconciled by `src/store.ts` `ensureSeedPlayers` (OP-5) | `BodyMeat, IrnmnOfPants, rolf it` (RSN-only, public repo) | comma-sep `RSN`/`RSN=discordId`; additive only (never removes/clobbers) | agent may edit the *string*; **membership** is Eric's call |
+| Seed merge policy (seed vs `/iam`) | `src/store.ts` `ensureSeedPlayers`, the `WHERE ... discord_user_id IS NULL` guard | member's `/iam` link wins over the seed | flip to seed-wins only with Eric's OK — would overwrite members' self-set links | **Eric** |
 
 ## 6. Escalate to Eric (stop conditions)
 
@@ -254,3 +287,19 @@ Update this playbook in the SAME change as any operation change.
   change (reuses `boss_kc`); still 9 top-level commands. Deploy = redeploy + (no new
   register needed unless the `/config bosskc` subcommand is being added — it is, so
   re-register).
+- 2026-07-09 — **self-healing seed roster**. `SEED_PLAYERS` (`wrangler.jsonc`,
+  RSN-only — public repo) reconciled into `players` via `ensureSeedPlayers`
+  (`src/store.ts`); interaction path marker-guarded on a `seed_applied` setting,
+  cron path unconditional (`ensureSeed`/`runDailySnapshot`, `src/index.ts`).
+  Motivation: roster was imperative-only (`/track add`), so an emptied `players`
+  table forced manual re-entry. Additive — never removes `/track add` players or
+  clobbers `/iam` links. Parser `parseSeedRoster` unit-tested (`test/seed.test.ts`).
+  Added OP-5, a §4 failure row, two §5 knobs. **Incident note:** landed after an
+  accidental deploy of a stale branch briefly regressed prod (missing milestones/
+  boss/clues); caught via a stray `boss_kc_interval` setting, rolled back
+  (`wrangler rollback`), then seed was ported here and redeployed clean (version
+  877b7bc8). Lesson: check `wrangler deployments` + all branches for what's live
+  before deploying. **Context (external to the bot):** the clan adopted a RuneLite
+  **Dink → Discord** live drop feed (client→webhook, no bot code) for real-time
+  named drops; the Phase-2 *bot-side* named-drop leaderboard (webhook receiver +
+  `drops` table) remains deferred per §6.

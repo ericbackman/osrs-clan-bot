@@ -66,6 +66,13 @@ schema.sql       D1 tables
 - **Source = Wise Old Man, store = D1.** Discord gives an interaction a 3-second
   deadline, so the bot always answers from D1 (instant) and only talks to WOM on
   the nightly cron and on `/track add`.
+- **The roster self-heals.** Players live in D1 (durable — a redeploy never wipes
+  it), but the core clan is also declared in `SEED_PLAYERS` (`wrangler.jsonc`).
+  The bot reconciles that list into D1 on every command and the nightly cron, so
+  if the table is ever emptied (fresh/reset DB, or writes that went to a local
+  `wrangler dev` DB) the roster comes back on its own — no re-adding by hand. The
+  seed only *adds*: `/track add` extras and `/iam` links are never removed or
+  overwritten.
 - **Why no real "join" detection?** An interactions-only bot (no gateway socket)
   can't see the raw "added to a server" event, so it greets on first use instead
   — which also lands the welcome in a channel people are actually in.

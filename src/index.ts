@@ -16,11 +16,46 @@ import {
   subOption,
   userId,
 } from "./discord";
-import { Store, canonicalRsn } from "./store";
+import { Store, canonicalRsn, parseSeedRoster, SEEDED, type GainRow, type PlayerRow } from "./store";
 import * as wom from "./wom";
 import { rankGains, type RankedPlayer } from "./scoring";
+import {
+  shouldAnnounceMilestone,
+  milestoneEmoji,
+  crossedMultiple,
+  prettyBoss,
+  DEFAULT_BOSS_KC_INTERVAL,
+  type MilestoneMode,
+} from "./milestones";
 
 const DAY_MS = 86_400_000;
+
+/** Clue-scroll tiers -> WOM activity metric keys (for /clues). */
+const CLUE_TIERS: Record<string, string> = {
+  all: "clue_scrolls_all",
+  beginner: "clue_scrolls_beginner",
+  easy: "clue_scrolls_easy",
+  medium: "clue_scrolls_medium",
+  hard: "clue_scrolls_hard",
+  elite: "clue_scrolls_elite",
+  master: "clue_scrolls_master",
+};
+
+/** window choice -> number of days. */
+function windowDays(window: string | undefined): number {
+  return window === "day" ? 1 : window === "month" ? 30 : 7;
+}
+
+/** Parse the `boss_kc_interval` setting; fall back to the default if unset/invalid. */
+function parseBossKcInterval(raw: string | null): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_BOSS_KC_INTERVAL;
+}
+
+/** Best-effort map a typed boss name to a WOM metric key ("K'ril" -> "kril_tsutsaroth" is on the user; we just normalize spacing/case). */
+function normalizeBoss(name: string): string {
+  return name.trim().toLowerCase().replace(/['`]/g, "").replace(/[\s-]+/g, "_");
+}
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -66,6 +101,17 @@ function boardLines(ranked: RankedPlayer[], limit = 15): string {
     .join("\n");
 }
 
+/** Render a simple "gained N <unit>" board from GainRow[] (already sorted). */
+function gainBoardLines(rows: GainRow[], unit: string, limit = 15): string {
+  return rows
+    .slice(0, limit)
+    .map((r, i) => {
+      const who = r.discordUserId ? `<@${r.discordUserId}>` : `**${r.displayName}**`;
+      return `${medal(i + 1)} ${who} — ${r.gained.toLocaleString()} ${unit}`;
+    })
+    .join("\n");
+}
+
 function helpEmbed(): object {
   return {
     title: "👋 OSRS Clan Companion",
@@ -85,16 +131,21 @@ function helpEmbed(): object {
         value:
           "`/leaderboard [day|week|month] [skill]` — the XP gains race\n" +
           "`/drops [day|week|month]` — rare-drop (collection log) race\n" +
+          "`/boss [name] [day|week|month]` — PvM KC race (all bosses, or one)\n" +
+          "`/clues [tier] [day|week|month]` — clue-scroll casket race\n" +
           "`/stats <rsn | @member>` — a player's current levels & XP",
       },
       {
-        name: "Admin setup",
+        name: "Admin controls (Eric & Stevie) — all take effect instantly, no redeploy",
         value:
+          "`/config show` — see the bot's current settings\n" +
           "`/config channel #channel` — where I auto-post\n" +
-          "`/config schedule daily|weekly|off` — how often I post the board",
+          "`/config schedule daily|weekly|off` — how often I post the gains board\n" +
+          "`/config milestones all|big|off` — how chatty milestone shout-outs are\n" +
+          "`/config bosskc 25|50|100|250` — announce a boss milestone every N kills",
       },
     ],
-    footer: { text: "Built by Eric — ping him for tweaks or new features." },
+    footer: { text: "Built by Eric — admins can tune me live with /config (no redeploy)." },
   };
 }
 
@@ -117,6 +168,23 @@ async function maybeGreet(env: Env, store: Store, interaction: any): Promise<voi
     content: "👋 Thanks for adding me!",
     embeds: [helpEmbed()],
   });
+}
+
+/**
+ * Reconcile the declarative SEED_PLAYERS roster into D1 so the clan's core
+ * members survive any wipe (fresh/reset DB, wrong-env write). Guarded by a
+ * marker: steady-state commands do zero writes — it only reconciles when the
+ * seed string changed or the marker is gone. A wiped DB drops the marker too,
+ * so the roster self-heals on the very next command. Runs off the hot path via
+ * ctx.waitUntil, so it never eats into Discord's 3s interaction deadline. The
+ * nightly cron reconciles unconditionally as a backstop (see runDailySnapshot).
+ */
+async function ensureSeed(env: Env, store: Store): Promise<void> {
+  const raw = env.SEED_PLAYERS?.trim();
+  if (!raw) return;
+  if ((await store.getSetting("seed_applied")) === raw) return;
+  await store.ensureSeedPlayers(parseSeedRoster(raw), new Date().toISOString());
+  await store.setSetting("seed_applied", raw);
 }
 
 // ── command handlers ──────────────────────────────────────────────────────────
@@ -268,6 +336,58 @@ async function handleDrops(store: Store, interaction: any): Promise<Response> {
   });
 }
 
+async function handleBoss(store: Store, interaction: any): Promise<Response> {
+  const bossInput = (option(interaction, "boss") as string | undefined)?.trim();
+  const days = windowDays(option(interaction, "window") as string | undefined);
+  const cutoff = new Date(Date.now() - days * DAY_MS).toISOString();
+
+  if (!bossInput) {
+    // No boss named — the "who's been PvMing" board: total KC gained, all bosses.
+    const rows = await store.totalBossGainsSince(cutoff);
+    if (!rows.length) {
+      return reply("No boss KC gained in this window yet — needs two daily snapshots to compare.");
+    }
+    return replyEmbed({
+      title: `☠️ PvM — last ${days}d (all bosses)`,
+      color: EMBED_COLOR,
+      description: gainBoardLines(rows, "kills"),
+    });
+  }
+
+  const metric = normalizeBoss(bossInput);
+  const rows = await store.bossKcGainsSince(cutoff, metric);
+  if (!rows.length) {
+    return reply(
+      `No **${bossInput}** KC gained in this window. Check the name (I use Wise Old Man's ` +
+        `spelling, e.g. \`commander_zilyana\`, \`the_gauntlet\`), or wait for two snapshots.`,
+    );
+  }
+  return replyEmbed({
+    title: `☠️ ${bossInput} — last ${days}d`,
+    color: EMBED_COLOR,
+    description: gainBoardLines(rows, "kc"),
+  });
+}
+
+async function handleClues(store: Store, interaction: any): Promise<Response> {
+  const tier = ((option(interaction, "tier") as string | undefined) ?? "all").toLowerCase();
+  const activity = CLUE_TIERS[tier] ?? CLUE_TIERS.all;
+  const days = windowDays(option(interaction, "window") as string | undefined);
+  const cutoff = new Date(Date.now() - days * DAY_MS).toISOString();
+
+  const rows = await store.activityGainsSince(cutoff, activity);
+  if (!rows.length) {
+    return reply(
+      `No ${tier === "all" ? "" : `${tier} `}clue caskets in this window yet — needs two snapshots.`,
+    );
+  }
+  return replyEmbed({
+    title: `📜 Clues — last ${days}d${tier === "all" ? "" : ` · ${tier}`}`,
+    color: EMBED_COLOR,
+    description: gainBoardLines(rows, "caskets"),
+  });
+}
+
 async function handleConfig(store: Store, interaction: any): Promise<Response> {
   const sub = subcommand(interaction);
   if (sub === "channel") {
@@ -280,16 +400,112 @@ async function handleConfig(store: Store, interaction: any): Promise<Response> {
     await store.setSetting("schedule", cadence);
     return reply(`Auto-post schedule set to **${cadence}**.`);
   }
-  return reply("Use `/config channel` or `/config schedule`.");
+  if (sub === "milestones") {
+    const mode = String(subOption(interaction, "mode") ?? "all");
+    await store.setSetting("milestones_mode", mode);
+    const interval = parseBossKcInterval(await store.getSetting("boss_kc_interval"));
+    const note =
+      mode === "off"
+        ? " — I'll stop posting milestones (still tracked, so turning it back on won't spam)."
+        : mode === "big"
+          ? " — life milestones only (99s, maxes, 100m/200m, combat); no boss-KC shout-outs."
+          : ` — life milestones plus a shout every **${interval}** boss kills (set with \`/config bosskc\`).`;
+    return reply(`Milestone announcements set to **${mode}**${note}`);
+  }
+  if (sub === "bosskc") {
+    const interval = String(subOption(interaction, "interval") ?? DEFAULT_BOSS_KC_INTERVAL);
+    await store.setSetting("boss_kc_interval", interval);
+    return reply(
+      `Boss-KC milestones now fire every **${interval}** kills ` +
+        "(only when `/config milestones` is set to **all**).",
+    );
+  }
+  if (sub === "show") {
+    const channel = await store.getSetting("post_channel_id");
+    const schedule = (await store.getSetting("schedule")) ?? "off";
+    const milestones = (await store.getSetting("milestones_mode")) ?? "all";
+    const interval = parseBossKcInterval(await store.getSetting("boss_kc_interval"));
+    return reply(
+      "**Current settings**\n" +
+        `• Auto-post channel: ${channel ? `<#${channel}>` : "*not set — use `/config channel`*"}\n` +
+        `• Schedule: **${schedule}**\n` +
+        `• Milestones: **${milestones}**\n` +
+        `• Boss-KC milestone every: **${interval}** kills\n\n` +
+        "Change any of these live with `/config` — no redeploy needed.",
+    );
+  }
+  return reply(
+    "Use `/config show`, `/config channel`, `/config schedule`, `/config milestones`, or `/config bosskc`.",
+  );
 }
 
 // ── cron: daily snapshot + optional auto-post ─────────────────────────────────
 
+/**
+ * Fetch a player's WOM achievements, seed silently on first sight (so we never
+ * dump their whole history of 99s into the channel), else return announcement
+ * lines for milestones earned since last night. Records every milestone it
+ * processes — announced or filtered out — so each is handled exactly once.
+ */
+async function collectPlayerMilestones(
+  store: Store,
+  p: PlayerRow,
+  at: string,
+  mode: MilestoneMode,
+  bossKcInterval: number,
+): Promise<string[]> {
+  const seen = await store.getSeenMilestones(p.rsn);
+  const achievements = await wom.getAchievements(p.display_name);
+  const tag = p.discord_user_id ? `<@${p.discord_user_id}>` : `**${p.display_name}**`;
+
+  if (!seen.has(SEEDED)) {
+    // First sight — seed WOM achievements silently (boss KC needs two snapshots
+    // anyway, so there's nothing to announce this pass either way).
+    await store.recordMilestones(p.rsn, [SEEDED, ...achievements.map((a) => a.name)], at);
+    return [];
+  }
+
+  const fresh = achievements.filter((a) => !seen.has(a.name));
+  // Record every fresh milestone even when mode='off' so re-enabling never floods.
+  if (fresh.length) await store.recordMilestones(p.rsn, fresh.map((a) => a.name), at);
+
+  const lines = fresh
+    .filter((m) => shouldAnnounceMilestone(m, mode))
+    .map((m) => `${milestoneEmoji(m)} ${tag} — ${m.name}!`);
+
+  // Boss-KC milestones (our own, every `bossKcInterval` kills) — chatty mode only.
+  if (mode === "all" && bossKcInterval > 0) {
+    const kc = await store.bossKcLastTwo(p.rsn);
+    if (kc) {
+      for (const [boss, curr] of kc.curr) {
+        const prev = kc.prev.get(boss);
+        if (prev === undefined) continue; // no baseline for this boss yet
+        const reached = crossedMultiple(prev, curr, bossKcInterval);
+        if (reached !== null) {
+          lines.push(`☠️ ${tag} — ${reached} ${prettyBoss(boss)} kills!`);
+        }
+      }
+    }
+  }
+
+  return lines;
+}
+
 async function runDailySnapshot(env: Env): Promise<void> {
   const store = new Store(env.DB);
+  // Self-heal the roster before snapshotting: re-add any seeded player missing
+  // from D1 so tonight's capture covers the whole clan. Unconditional here (the
+  // interaction path is marker-guarded) so even a partial manual delete recovers.
+  await store.ensureSeedPlayers(
+    parseSeedRoster(env.SEED_PLAYERS),
+    new Date().toISOString(),
+  );
   const players = await store.listPlayers();
   const capturedAt = new Date().toISOString();
+  const milestoneMode = ((await store.getSetting("milestones_mode")) ?? "all") as MilestoneMode;
+  const bossKcInterval = parseBossKcInterval(await store.getSetting("boss_kc_interval"));
 
+  const milestoneLines: string[] = [];
   for (const p of players) {
     try {
       const wp = await wom.updatePlayer(p.display_name);
@@ -297,12 +513,38 @@ async function runDailySnapshot(env: Env): Promise<void> {
     } catch (e) {
       console.error(`snapshot failed for ${p.display_name}: ${(e as Error).message}`);
     }
+    // Milestones — independent GET; recorded even when we don't/can't post (below),
+    // so a later "turn posting on" never floods the channel with old milestones.
+    try {
+      milestoneLines.push(
+        ...(await collectPlayerMilestones(store, p, capturedAt, milestoneMode, bossKcInterval)),
+      );
+    } catch (e) {
+      console.error(`milestones skipped for ${p.display_name}: ${(e as Error).message}`);
+    }
     await new Promise((r) => setTimeout(r, 300)); // be polite to WOM
   }
 
   const schedule = await store.getSetting("schedule");
   const channel = await store.getSetting("post_channel_id");
   if (!channel || schedule === "off") return;
+
+  // Milestone celebrations — new 99s, maxes, and KC milestones earned overnight.
+  if (milestoneLines.length) {
+    try {
+      await postToChannel(env, channel, {
+        embeds: [
+          {
+            title: "🎉 Milestones!",
+            color: EMBED_COLOR,
+            description: milestoneLines.slice(0, 20).join("\n"),
+          },
+        ],
+      });
+    } catch (e) {
+      console.error(`milestones announce skipped: ${(e as Error).message}`);
+    }
+  }
 
   // Rare-drop announcement — any day someone's collection log rose overnight.
   try {
@@ -374,6 +616,12 @@ export default {
     const store = new Store(env.DB);
     // First time the bot is used in the server, introduce itself in that channel.
     ctx.waitUntil(maybeGreet(env, store, interaction).catch(() => {}));
+    // Self-heal the roster from SEED_PLAYERS if D1 was ever reset (no-op normally).
+    ctx.waitUntil(
+      ensureSeed(env, store).catch((e) =>
+        console.error(`seed reconcile failed: ${(e as Error).message}`),
+      ),
+    );
     try {
       switch (interaction.data?.name) {
         case "help":
@@ -386,6 +634,10 @@ export default {
           return await handleLeaderboard(store, interaction);
         case "drops":
           return await handleDrops(store, interaction);
+        case "boss":
+          return await handleBoss(store, interaction);
+        case "clues":
+          return await handleClues(store, interaction);
         case "stats":
           return await handleStats(store, interaction);
         case "config":

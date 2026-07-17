@@ -106,6 +106,61 @@ const commands = [
     ],
   },
   {
+    name: "boss",
+    description: "PvM kill-count leaderboard (all bosses, or one)",
+    options: [
+      {
+        type: 3,
+        name: "boss",
+        description: "A boss name (Wise Old Man spelling, e.g. zulrah). Omit for all bosses.",
+        required: false,
+      },
+      {
+        type: 3,
+        name: "window",
+        description: "Time window",
+        required: false,
+        choices: [
+          { name: "day", value: "day" },
+          { name: "week", value: "week" },
+          { name: "month", value: "month" },
+        ],
+      },
+    ],
+  },
+  {
+    name: "clues",
+    description: "Clue-scroll casket leaderboard",
+    options: [
+      {
+        type: 3,
+        name: "tier",
+        description: "Clue tier (default: all)",
+        required: false,
+        choices: [
+          { name: "all", value: "all" },
+          { name: "beginner", value: "beginner" },
+          { name: "easy", value: "easy" },
+          { name: "medium", value: "medium" },
+          { name: "hard", value: "hard" },
+          { name: "elite", value: "elite" },
+          { name: "master", value: "master" },
+        ],
+      },
+      {
+        type: 3,
+        name: "window",
+        description: "Time window",
+        required: false,
+        choices: [
+          { name: "day", value: "day" },
+          { name: "week", value: "week" },
+          { name: "month", value: "month" },
+        ],
+      },
+    ],
+  },
+  {
     name: "stats",
     description: "A player's current stats",
     options: [
@@ -118,6 +173,7 @@ const commands = [
     description: "Configure the bot (admins)",
     default_member_permissions: "32",
     options: [
+      { type: 1, name: "show", description: "Show the bot's current settings" },
       {
         type: 1,
         name: "channel",
@@ -140,6 +196,43 @@ const commands = [
               { name: "daily", value: "daily" },
               { name: "weekly", value: "weekly" },
               { name: "off", value: "off" },
+            ],
+          },
+        ],
+      },
+      {
+        type: 1,
+        name: "milestones",
+        description: "How chatty milestone announcements are",
+        options: [
+          {
+            type: 3,
+            name: "mode",
+            description: "all = life + boss KC; big = life only; off = none",
+            required: true,
+            choices: [
+              { name: "all", value: "all" },
+              { name: "big", value: "big" },
+              { name: "off", value: "off" },
+            ],
+          },
+        ],
+      },
+      {
+        type: 1,
+        name: "bosskc",
+        description: "Announce a boss milestone every N kills (mode 'all')",
+        options: [
+          {
+            type: 4,
+            name: "interval",
+            description: "Kills between boss milestones (lower = more shout-outs)",
+            required: true,
+            choices: [
+              { name: "25", value: 25 },
+              { name: "50", value: 50 },
+              { name: "100", value: 100 },
+              { name: "250", value: 250 },
             ],
           },
         ],

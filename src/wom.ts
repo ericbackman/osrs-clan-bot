@@ -2,6 +2,8 @@
 // and survives name changes — so the bot reads from WOM instead of scraping the
 // Hiscores itself. Docs: https://docs.wiseoldman.net  API: api.wiseoldman.net/v2
 
+import type { Milestone } from "./milestones";
+
 const WOM_API = "https://api.wiseoldman.net/v2";
 // WOM asks for a descriptive User-Agent so they can contact heavy users.
 const USER_AGENT = "osrs-clan-bot (Discord clan stats; github.com/ericbackman)";
@@ -12,6 +14,16 @@ export interface WomSkill {
   xp: number;
 }
 
+export interface WomBoss {
+  boss: string; // WOM metric key, e.g. "zulrah"
+  kills: number;
+}
+
+export interface WomActivity {
+  activity: string; // WOM metric key, e.g. "clue_scrolls_all"
+  score: number;
+}
+
 export interface WomPlayer {
   displayName: string;
   overallXp: number;
@@ -19,6 +31,8 @@ export interface WomPlayer {
   ehp: number;
   collog: number | null; // collection-log unique count (null if unranked) — our rare-drop signal
   skills: WomSkill[]; // excludes the derived "overall" row
+  bosses: WomBoss[]; // ranked bosses only (kills >= 0)
+  activities: WomActivity[]; // ranked activities only (score >= 0), incl. clue tiers
 }
 
 export class WomError extends Error {}
@@ -70,6 +84,22 @@ export function parsePlayer(d: any): WomPlayer {
       xp: Math.max(Number(row.experience ?? 0), 0),
     });
   }
+  // Bosses: keep only ranked entries (WOM returns kills -1 when unranked), so a
+  // never-fought boss never pollutes a KC diff.
+  const bossesObj: Record<string, any> = data.bosses ?? {};
+  const bosses: WomBoss[] = [];
+  for (const name of Object.keys(bossesObj)) {
+    const kills = Number(bossesObj[name]?.kills ?? -1);
+    if (kills >= 0) bosses.push({ boss: name, kills });
+  }
+  // Activities: same -1-means-unranked rule. Includes clue-scroll tiers.
+  const activitiesObj: Record<string, any> = data.activities ?? {};
+  const activities: WomActivity[] = [];
+  for (const name of Object.keys(activitiesObj)) {
+    const score = Number(activitiesObj[name]?.score ?? -1);
+    if (score >= 0) activities.push({ activity: name, score });
+  }
+
   const overall = skillsObj.overall ?? {};
   // Collection-log unique count — the rare-drop signal. WOM returns -1 when the
   // player isn't ranked for it; treat that as unknown (null) so we never diff it.
@@ -82,5 +112,35 @@ export function parsePlayer(d: any): WomPlayer {
     ehp: Number(d?.ehp ?? 0),
     collog,
     skills,
+    bosses,
+    activities,
   };
+}
+
+/**
+ * Fetch a player's computed achievements (milestones) from WOM. This is a
+ * separate GET from updatePlayer — the daily cron calls it once per player after
+ * the snapshot. Raises WomError on non-2xx so one bad name skips without aborting
+ * the run. Docs: GET /players/:username/achievements.
+ */
+export async function getAchievements(username: string): Promise<Milestone[]> {
+  const resp = await fetch(
+    `${WOM_API}/players/${encodeURIComponent(username)}/achievements`,
+    { headers: headers() },
+  );
+  if (!resp.ok) throw new WomError(`achievements ${username}: HTTP ${resp.status}`);
+  return parseAchievements(await resp.json());
+}
+
+/** Normalize the WOM achievements array. Pure (no IO) so it's unit-testable. */
+export function parseAchievements(d: any): Milestone[] {
+  if (!Array.isArray(d)) return [];
+  return d
+    .map((a) => ({
+      name: String(a?.name ?? ""),
+      metric: String(a?.metric ?? ""),
+      threshold: Number(a?.threshold ?? 0),
+      createdAt: String(a?.createdAt ?? ""),
+    }))
+    .filter((m) => m.name.length > 0);
 }

@@ -7,6 +7,7 @@ export interface Env {
   DISCORD_APPLICATION_ID: string; // var
   DISCORD_PUBLIC_KEY: string; // var
   GUILD_ID: string; // var — single-server bot
+  SEED_PLAYERS?: string; // var — declarative roster, reconciled into D1 (see store.ts)
   ANTHROPIC_API_KEY?: string; // secret, phase 3 (/ask)
 }
 

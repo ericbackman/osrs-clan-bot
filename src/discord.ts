@@ -1,3 +1,4 @@
+// brick: picks-worker/src/discord.ts — canonical home; see Github/BRICKS.md
 // Discord interaction verification, REST helpers, and shared constants.
 // Mirrors picks-worker/src/discord.ts: WebCrypto Ed25519, zero npm deps.
 
@@ -67,13 +68,23 @@ export async function verifyDiscordRequest(
   }
 }
 
+const MAX_REST_ATTEMPTS = 4;
+
+export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// One Discord REST call, resilient to transient failure (backported from
+// picks-worker's brick fix: Discord rate-limits per-channel, so a burst of posts —
+// e.g. the daily auto-post — can trip a 429 and, without this, abort outright with
+// no retry). On a 429 we wait exactly as long as Discord tells us (`retry_after`)
+// and try again; 5xx get an exponential backoff.
 async function rest(
   env: Env,
   method: string,
   path: string,
   body?: unknown,
-): Promise<Response> {
-  return fetch(`${DISCORD_API}${path}`, {
+  attempt = 0,
+): Promise<any> {
+  const resp = await fetch(`${DISCORD_API}${path}`, {
     method,
     headers: {
       Authorization: `Bot ${env.DISCORD_TOKEN}`,
@@ -81,6 +92,32 @@ async function rest(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (resp.ok) return resp.status === 204 ? null : resp.json();
+
+  const retryable = resp.status === 429 || (resp.status >= 500 && resp.status < 600);
+  if (retryable && attempt < MAX_REST_ATTEMPTS) {
+    let waitMs: number;
+    if (resp.status === 429) {
+      // Discord reports the wait in the body (`retry_after`, seconds) and header.
+      const text = await resp.text();
+      let retryAfter = 1;
+      try {
+        retryAfter = JSON.parse(text).retry_after ?? retryAfter;
+      } catch {
+        /* non-JSON body — fall back to the header/default below */
+      }
+      const header = resp.headers.get("Retry-After");
+      if (header) retryAfter = Math.max(retryAfter, Number(header));
+      waitMs = Math.ceil(retryAfter * 1000) + 100; // small cushion past the window
+    } else {
+      waitMs = 400 * 2 ** attempt; // 0.4s, 0.8s, 1.6s …
+    }
+    await sleep(waitMs);
+    return rest(env, method, path, body, attempt + 1);
+  }
+  throw new Error(
+    `Discord ${method} ${path}: HTTP ${resp.status} ${await resp.text().catch(() => "")}`,
+  );
 }
 
 /** Replace the deferred ("thinking…") message once slow work completes. */

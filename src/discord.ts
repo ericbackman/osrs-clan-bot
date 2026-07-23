@@ -1,3 +1,4 @@
+// brick: picks-worker/src/discord.ts — canonical home; see Github/BRICKS.md
 // Discord interaction verification, REST helpers, and shared constants.
 // Mirrors picks-worker/src/discord.ts: WebCrypto Ed25519, zero npm deps.
 

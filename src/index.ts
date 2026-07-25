@@ -250,7 +250,10 @@ async function handleIam(store: Store, interaction: any): Promise<Response> {
   const rsn = String(option(interaction, "rsn") ?? "").trim();
   const uid = userId(interaction);
   const now = new Date().toISOString();
-  await store.linkDiscord(rsn, uid, rsn, uid, now);
+  const linked = await store.linkDiscord(rsn, uid, rsn, uid, now);
+  if (!linked) {
+    return reply("⚠️ That RuneScape name is already linked to another member.");
+  }
   return reply(`Linked you to **${rsn}** — you'll be @-mentioned on the leaderboard.`);
 }
 
@@ -585,6 +588,16 @@ async function runDailySnapshot(env: Env): Promise<void> {
 
 // ── entry points ──────────────────────────────────────────────────────────────
 
+/**
+ * True when GUILD_ID is pinned and this interaction didn't come from that
+ * guild. Absent guild_id (DM / user-install context) counts as a mismatch —
+ * every command is guild-scoped-registered (see scripts/register.mjs), so
+ * nothing legitimately runs without a matching guild_id.
+ */
+export function isWrongGuild(env: Pick<Env, "GUILD_ID">, interaction: { guild_id?: string | null }): boolean {
+  return Boolean(env.GUILD_ID) && interaction.guild_id !== env.GUILD_ID;
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
@@ -609,7 +622,7 @@ export default {
     if (interaction.type !== InteractionType.APPLICATION_COMMAND) {
       return reply("Unsupported interaction.");
     }
-    if (env.GUILD_ID && interaction.guild_id && interaction.guild_id !== env.GUILD_ID) {
+    if (isWrongGuild(env, interaction)) {
       return reply("This bot is configured for a different server.");
     }
 

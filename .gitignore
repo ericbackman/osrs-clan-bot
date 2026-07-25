@@ -1,6 +1,7 @@
 # Secrets / local config (never commit)
 .dev.vars
 *.env
+*.vars
 
 # Node / build
 node_modules/

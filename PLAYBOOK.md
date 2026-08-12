@@ -243,12 +243,12 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   `.gitleaks.toml` present). `DISCORD_TOKEN` enters only via interactive
   `npx wrangler secret put DISCORD_TOKEN` — never piped through PowerShell
   (BOM corruption; workspace-wide gotcha).
-- **`osrs_clan_companion.env` at the repo root holds a LIVE plaintext Discord bot
-  token** and is read by no script (orphaned; currently gitignored, so not in git
-  history). Confirm it stays gitignored before any repo-wide action (`git add -A`,
-  tarball, zip-and-send) and treat exposing/copying/committing it as equivalent to
-  leaking `DISCORD_TOKEN` (§6 stop condition). It should ideally be deleted and the
-  token rotated — `TODO(Eric)` (see the report's incidental findings).
+- **Never** keep a plaintext bot token in a working file at the repo root. Secrets
+  belong in `wrangler secret put` (production) or `.dev.vars` (local, gitignored).
+  `.gitignore` covers `.dev.vars`, `*.env` and `*.vars`; verify a new secret file
+  is matched by one of those rules *before* any repo-wide action (`git add -A`,
+  tarball, zip-and-send), and treat exposing or committing one as equivalent to
+  leaking `DISCORD_TOKEN` (§6 stop condition).
 - **Never** post test/debug messages to the live Discord channel — it's a real
   friend group's server. Verify with ephemeral, read-only commands (`/help`,
   `/stats`) instead.

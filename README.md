@@ -27,6 +27,12 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 - **Ranks PvM & clues** — `/boss` for kill-count races (all bosses or one) and
   `/clues` for clue-scroll caskets, both from the stats WOM already returns.
 - **Auto-posts** the weekly board to a channel you choose, on the cadence you set.
+- **Real-time drops & PBs (optional Dink layer)** — clanmates who run the RuneLite
+  **Dink** plugin can point it at the bot to add *named* drops, a biggest-drop
+  highlight, and boss **personal-best times** (`/loot`, `/pb`) — things the
+  hiscores can't see at all. Opt-in per player and layered on top of Wise Old Man
+  (which stays the universal baseline); nobody has to install anything. Setup:
+  [`DINK_SETUP.md`](DINK_SETUP.md).
 - **Introduces itself**: the first time it's used in a server it drops a short
   "here's what I do" note in that channel, and `/help` shows it any time.
 
@@ -41,6 +47,8 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 | `/drops [day\|week\|month]` | anyone | rare-drop (collection log) leaderboard |
 | `/boss [name] [day\|week\|month]` | anyone | PvM kill-count race (all bosses, or one) |
 | `/clues [tier] [day\|week\|month]` | anyone | clue-scroll casket race |
+| `/loot [day\|week\|month]` | anyone | named-drop value race + biggest drop *(needs Dink — see [`DINK_SETUP.md`](DINK_SETUP.md))* |
+| `/pb [boss]` | anyone | boss personal-best times *(needs Dink)* |
 | `/stats <rsn \| @member>` | anyone | a player's current levels & XP |
 | `/config show` · `channel #channel` · `schedule daily\|weekly\|off` · `milestones all\|big\|off` · `bosskc 25\|50\|100\|250` | admin | live settings — no redeploy |
 
@@ -54,11 +62,12 @@ A picks-worker-style Cloudflare Worker:
 
 ```
 src/discord.ts   Ed25519 request verification, REST helpers, constants
-src/wom.ts       Wise Old Man client (player, bosses, activities, achievements)  ← data source
-src/store.ts     D1 query layer (settings, players, snapshots, skill_xp, boss_kc, activity_score, milestones)
+src/wom.ts       Wise Old Man client (player, bosses, activities, achievements)  ← baseline data source
+src/dink.ts      Dink plugin event normalizer (optional real-time source) — pure; dropScore is a tunable knob
+src/store.ts     D1 query layer (settings, players, snapshots, skill_xp, boss_kc, activity_score, milestones, dink_events)
 src/scoring.ts   leaderboard ranking — a knob that's yours to tune
 src/milestones.ts  which achievements are "worth a ping" — a second tunable knob
-src/index.ts     fetch() + scheduled() entry points, command routing, the welcome
+src/index.ts     fetch() (/interactions + /dink) + scheduled() entry points, command routing, the welcome
 scripts/register.mjs   slash-command registration
 schema.sql       D1 tables
 ```
@@ -66,6 +75,14 @@ schema.sql       D1 tables
 - **Source = Wise Old Man, store = D1.** Discord gives an interaction a 3-second
   deadline, so the bot always answers from D1 (instant) and only talks to WOM on
   the nightly cron and on `/track add`.
+- **Optional second source = Dink.** Clanmates' RuneLite Dink plugin POSTs
+  real-time events to `POST /dink` (gated by a shared `DINK_SECRET`, and
+  roster-gated so only tracked players count); the bot normalizes them
+  (`src/dink.ts`), stores them in `dink_events`, and serves `/loot` + `/pb` from
+  D1. It **captures silently** — no channel posts — so it never double-posts
+  against a clan's existing raw Dink→Discord feed. WOM stays the universal
+  baseline; Dink is additive and per-player opt-in. Only public event types are
+  stored (deaths/trades/GE are dropped on arrival). See [`DINK_SETUP.md`](DINK_SETUP.md).
 - **The roster self-heals.** Players live in D1 (durable — a redeploy never wipes
   it), but the core clan is also declared in `SEED_PLAYERS` (`wrangler.jsonc`).
   The bot reconciles that list into D1 on every command and the nightly cron, so

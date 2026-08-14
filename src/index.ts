@@ -27,6 +27,7 @@ import {
   DEFAULT_BOSS_KC_INTERVAL,
   type MilestoneMode,
 } from "./milestones";
+import { parseDinkEvent, dropScore, formatGp, formatDuration } from "./dink";
 
 const DAY_MS = 86_400_000;
 
@@ -134,6 +135,12 @@ function helpEmbed(): object {
           "`/boss [name] [day|week|month]` — PvM KC race (all bosses, or one)\n" +
           "`/clues [tier] [day|week|month]` — clue-scroll casket race\n" +
           "`/stats <rsn | @member>` — a player's current levels & XP",
+      },
+      {
+        name: "Real-time extras (need the Dink plugin — see DINK_SETUP.md)",
+        value:
+          "`/loot [day|week|month]` — named-drop value board + biggest drop\n" +
+          "`/pb [boss]` — boss personal-best times (fastest-kill race)",
       },
       {
         name: "Admin controls (Eric & Stevie) — all take effect instantly, no redeploy",
@@ -388,6 +395,122 @@ async function handleClues(store: Store, interaction: any): Promise<Response> {
   });
 }
 
+/** Render a loot-value board (gp formatted, e.g. "1.23M gp"). */
+function lootBoardLines(rows: GainRow[], limit = 15): string {
+  return rows
+    .slice(0, limit)
+    .map((r, i) => {
+      const who = r.discordUserId ? `<@${r.discordUserId}>` : `**${r.displayName}**`;
+      return `${medal(i + 1)} ${who} — ${formatGp(r.gained)} gp`;
+    })
+    .join("\n");
+}
+
+/**
+ * /loot — named-drop value board + the single biggest drop, from Dink events.
+ * Empty state distinguishes "no Dink data at all" (point people at the setup
+ * guide) from "none in this window" (WOM `/drops` still works either way).
+ */
+async function handleLoot(store: Store, interaction: any): Promise<Response> {
+  const days = windowDays(option(interaction, "window") as string | undefined);
+  const cutoff = new Date(Date.now() - days * DAY_MS).toISOString();
+
+  const board = await store.lootValueSince(cutoff);
+  if (!board.length) {
+    const any = await store.dinkEventCount();
+    return reply(
+      any === 0
+        ? "No Dink loot captured yet. Named-drop tracking needs the RuneLite **Dink** " +
+            "plugin pointed at the bot — a one-time webhook paste per person " +
+            "(see `DINK_SETUP.md`). WOM-based `/drops` works without it."
+        : `No loot logged in the last ${days}d.`,
+    );
+  }
+
+  // Biggest drop: re-rank the top value candidates by dropScore() (tunable knob).
+  const candidates = await store.topLootRowsSince(cutoff, 25);
+  let best = candidates[0];
+  let bestScore = best ? dropScore(best.value, best.rarity) : -1;
+  for (const c of candidates) {
+    const s = dropScore(c.value, c.rarity);
+    if (s > bestScore) {
+      bestScore = s;
+      best = c;
+    }
+  }
+
+  const embed: any = {
+    title: `💰 Loot — last ${days}d`,
+    color: EMBED_COLOR,
+    description: lootBoardLines(board),
+  };
+  if (best) {
+    const who = best.discordUserId ? `<@${best.discordUserId}>` : `**${best.displayName}**`;
+    embed.fields = [
+      {
+        name: "🏆 Biggest drop",
+        value:
+          `${who} — ${best.item ?? "loot"} (${formatGp(best.value)} gp)` +
+          (best.source ? ` from ${best.source}` : ""),
+      },
+    ];
+  }
+  return replyEmbed(embed);
+}
+
+/**
+ * /pb — boss personal-best times (Dink KILL_COUNT). With a boss: a fastest-kill
+ * race for it; without: the clan's most recent PBs. PB times don't exist in WOM
+ * or the Hiscores at all — this board is only possible with Dink.
+ */
+async function handlePb(store: Store, interaction: any): Promise<Response> {
+  const bossInput = (option(interaction, "boss") as string | undefined)?.trim();
+
+  if (bossInput) {
+    const rows = await store.bestPbForBoss(bossInput);
+    if (!rows.length) {
+      return reply(
+        `No personal bests recorded for **${bossInput}** yet. PB times come from Dink ` +
+          "(a timed boss kill), so a clanmate needs the webhook set up (`DINK_SETUP.md`). " +
+          'Use the spelling Dink shows (e.g. "Zulrah", "Vorkath", "TzKal-Zuk").',
+      );
+    }
+    const lines = rows
+      .slice(0, 15)
+      .map((r, i) => {
+        const who = r.discordUserId ? `<@${r.discordUserId}>` : `**${r.displayName}**`;
+        return `${medal(i + 1)} ${who} — ${formatDuration(r.pbSeconds)}`;
+      })
+      .join("\n");
+    return replyEmbed({
+      title: `⏱️ ${bossInput} — fastest kills`,
+      color: EMBED_COLOR,
+      description: lines,
+    });
+  }
+
+  const recent = await store.recentPbs(15);
+  if (!recent.length) {
+    const any = await store.dinkEventCount();
+    return reply(
+      any === 0
+        ? "No personal bests captured yet — PB times need the Dink plugin (see `DINK_SETUP.md`)."
+        : "No personal bests recorded yet. Name a boss too: `/pb boss:Zulrah`.",
+    );
+  }
+  const lines = recent
+    .map((r) => {
+      const who = r.discordUserId ? `<@${r.discordUserId}>` : `**${r.displayName}**`;
+      return `• ${who} — ${r.source ?? "boss"} in ${formatDuration(r.pbSeconds)}`;
+    })
+    .join("\n");
+  return replyEmbed({
+    title: "⏱️ Recent personal bests",
+    color: EMBED_COLOR,
+    description: lines,
+  });
+}
+
 async function handleConfig(store: Store, interaction: any): Promise<Response> {
   const sub = subcommand(interaction);
   if (sub === "channel") {
@@ -583,6 +706,71 @@ async function runDailySnapshot(env: Env): Promise<void> {
   }
 }
 
+// ── Dink receiver: real-time in-game events pushed from the RuneLite plugin ────
+
+/**
+ * Read a Dink webhook body: JSON by default, or multipart when a screenshot is
+ * attached (we read `payload_json` and ignore the image — so players never have
+ * to disable screenshots). Throws on a malformed body so the caller can 400.
+ */
+async function readDinkBody(req: Request): Promise<any> {
+  const ct = req.headers.get("content-type") ?? "";
+  if (ct.includes("multipart/form-data")) {
+    const form = await req.formData();
+    const pj = form.get("payload_json");
+    if (typeof pj !== "string") throw new Error("multipart without payload_json");
+    return JSON.parse(pj);
+  }
+  return await req.json();
+}
+
+/**
+ * POST /dink — capture one Dink event into D1. ADDITIVE + SILENT by design: it
+ * only stores (no channel posts), so it never double-posts against the clan's
+ * existing raw Dink→Discord feed. WOM stays the universal baseline; this just
+ * layers item-level, real-time data on top for whoever opts in.
+ *
+ * Two guards: (1) DINK_SECRET (via `?key=` or `x-dink-key`) — the URL is shared
+ * with clanmates but not public; (2) roster-gating — events from untracked RSNs
+ * are ignored, so even a leaked URL can't inject fake drops for real players.
+ * Returns 2xx for accepted OR ignored so Dink doesn't retry-storm; 401 only on a
+ * bad key; 500 only on a real store error (idempotent, so a Dink retry is safe).
+ */
+async function handleDink(req: Request, env: Env, url: URL): Promise<Response> {
+  if (!env.DINK_SECRET) {
+    console.error("dink: DINK_SECRET not configured — rejecting POST /dink");
+    return new Response("dink receiver not configured", { status: 503 });
+  }
+  const key = url.searchParams.get("key") ?? req.headers.get("x-dink-key");
+  if (key !== env.DINK_SECRET) return new Response("bad dink key", { status: 401 });
+
+  let payload: any;
+  try {
+    payload = await readDinkBody(req);
+  } catch (e) {
+    console.error(`dink: body parse failed: ${(e as Error).message}`);
+    return new Response("bad body", { status: 400 });
+  }
+
+  const ev = parseDinkEvent(payload);
+  if (!ev) return new Response("ignored (unparseable)", { status: 202 });
+
+  const store = new Store(env.DB);
+  const player = await store.resolveRsn(ev.playerName, null);
+  if (!player) {
+    console.log(`dink: ignoring ${ev.type} from untracked '${ev.playerName}'`);
+    return new Response("untracked player", { status: 202 });
+  }
+
+  try {
+    const isNew = await store.recordDinkEvent(player.rsn, ev, new Date().toISOString());
+    return new Response(isNew ? "ok" : "duplicate", { status: 200 });
+  } catch (e) {
+    console.error(`dink: store failed for ${player.rsn}: ${(e as Error).message}`);
+    return new Response("store error", { status: 500 }); // Dink retries; INSERT OR IGNORE makes it safe
+  }
+}
+
 // ── entry points ──────────────────────────────────────────────────────────────
 
 export default {
@@ -590,6 +778,11 @@ export default {
     const url = new URL(req.url);
     if (req.method === "GET" && url.pathname === "/") {
       return new Response("osrs-clan-bot up");
+    }
+    // Dink plugin webhook (real-time in-game events). Separate from Discord
+    // interactions — no signature, no 3s deadline; gated by DINK_SECRET instead.
+    if (req.method === "POST" && url.pathname === "/dink") {
+      return await handleDink(req, env, url);
     }
     if (req.method !== "POST" || url.pathname !== "/interactions") {
       return new Response("not found", { status: 404 });
@@ -638,6 +831,10 @@ export default {
           return await handleBoss(store, interaction);
         case "clues":
           return await handleClues(store, interaction);
+        case "loot":
+          return await handleLoot(store, interaction);
+        case "pb":
+          return await handlePb(store, interaction);
         case "stats":
           return await handleStats(store, interaction);
         case "config":

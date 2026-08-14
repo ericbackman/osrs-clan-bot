@@ -15,11 +15,21 @@
 ## 1. System map
 
 - **What**: ToS-safe Discord bot for "The Dawg Pound" OSRS friend clan. Cloudflare
-  Worker answers 9 slash commands from Cloudflare D1; the only machine-driven
+  Worker answers 11 slash commands from Cloudflare D1; the only machine-driven
   recurring op is a nightly cron that refreshes every tracked player via the
   **Wise Old Man** API, stores a snapshot (skills + boss KC + activities),
   announces new rare drops **and milestones** (99s/maxes/KC via WOM achievements),
   and optionally auto-posts the weekly gains board.
+- **Second, optional data path (added 2026-07-18)**: `POST /dink`. Clanmates'
+  RuneLite **Dink** plugin pushes real-time in-game events (loot, boss KC + PB
+  times, pets, clues, levels…) to the Worker; the bot normalizes them
+  (`src/dink.ts`), stores them in `dink_events`, and serves `/loot` + `/pb` from
+  D1. **Silent capture — no channel posts** (never double-posts against a clan's
+  raw Dink→Discord feed). Additive + per-player opt-in: WOM stays the baseline for
+  everyone. Gated by `DINK_SECRET` (a Worker secret) **and** roster-gated (only
+  tracked RSNs are stored). Only the public event tier is stored — deaths/trades/
+  GE are dropped on arrival (`CAPTURED_TYPES` in `src/dink.ts`). Player setup:
+  `DINK_SETUP.md`. Full menu/roadmap: `DINK_ROADMAP.md`.
 - **Live URL**: `https://osrs-clan-bot.ericbackman81.workers.dev`
 - **Schedule**: nightly cron `0 8 * * *` (08:00 UTC) — `osrs-clan-bot/wrangler.jsonc`
   `triggers.crons`. Registered in workspace [`AUTOMATION.md`](../AUTOMATION.md#L101)
@@ -30,11 +40,14 @@
   (per-snapshot child rows), and `announced_milestones` (milestone dedup) — see
   `schema.sql`. `boss_kc`/`activity_score`/`announced_milestones` were added
   2026-07-08 (§8); apply with the additive `wrangler d1 execute ... --file schema.sql`
-  step (OP-4) before deploying the code that reads them.
-- **Source of truth**: Wise Old Man (`api.wiseoldman.net/v2`) is the stats source;
-  D1 is the store. Discord's 3s interaction deadline means commands always answer
-  from D1, never call WOM live (exception: `/track add` grabs one immediate
-  snapshot — `src/index.ts` `handleTrack`, sub `add`).
+  step (OP-4) before deploying the code that reads them. `dink_events`
+  (append-only Dink push events; idempotent on a stable `dedup_key`) was added
+  2026-07-18 (§8) — same additive OP-4 apply step.
+- **Source of truth**: Wise Old Man (`api.wiseoldman.net/v2`) is the baseline
+  stats source; D1 is the store. Discord's 3s interaction deadline means commands
+  always answer from D1, never call WOM live (exception: `/track add` grabs one
+  immediate snapshot — `src/index.ts` `handleTrack`, sub `add`). **Dink** is a
+  second, optional source that pushes to D1 via `/dink` (not a WOM replacement).
 - **Roster self-heal**: the core roster is declared in `SEED_PLAYERS`
   (`wrangler.jsonc`, RSN-only — public repo) and reconciled into `players`
   (INSERT OR IGNORE) on every interaction (marker-guarded on the `seed_applied`
@@ -42,8 +55,8 @@
   with no manual `/track add`. Additive only: never removes `/track add` players
   or clobbers `/iam` links (`src/store.ts` `ensureSeedPlayers`; `ensureSeed` in
   `src/index.ts`). See OP-5.
-- **Entry points**: `src/index.ts` `fetch()` (interactions) and `scheduled()`
-  (cron) -> `runDailySnapshot()` (~line 288).
+- **Entry points**: `src/index.ts` `fetch()` (routes `/interactions` **and**
+  `POST /dink` -> `handleDink`) and `scheduled()` (cron) -> `runDailySnapshot()`.
 - **Eric's metric**: `scorePlayer()` in `src/scoring.ts` (line 44) ranks the
   leaderboard — owner:Eric, see section 5.
 - **No staging** — the guild is production. Verify changes with ephemeral,
@@ -136,9 +149,9 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   ```bash
   npm run register
   ```
-- **Verify**: console prints `Registered 9 commands to guild 690589122833678427.`
+- **Verify**: console prints `Registered 11 commands to guild 690589122833678427.`
   (count matches however many top-level commands are in `scripts/register.mjs`
-  at the time — 9 after the 2026-07-08 `/boss` + `/clues` additions). The
+  at the time — 11 after the 2026-07-18 `/loot` + `/pb` additions; 9 before). The
   new/changed command appears in the Discord guild **immediately** — it's
   guild-scoped, not global.
 - **If it fails**: exit code 1 with `Missing config...` means `DISCORD_TOKEN` /
@@ -188,6 +201,37 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 - **If it fails**: a player didn't seed → check its entry is `RSN` or
   `RSN=discordId` (digits-only id). `SEED_PLAYERS=""` disables the feature.
 
+### OP-6: Set / rotate the Dink secret + verify the `/dink` endpoint
+
+- **What it is**: `DINK_SECRET` is a Worker **secret** — the shared key clanmates
+  put in their Dink webhook URL (`…/dink?key=<secret>`). It gates `POST /dink`:
+  no/blank secret → the endpoint 503s (fails closed); wrong key → 401. It is NOT
+  in `wrangler.jsonc` (that's public) and NOT in this repo.
+- **Trigger**: first enable of the Dink feature; whenever the key is rotated
+  (e.g. someone leaked the URL).
+- **Set it**:
+  ```bash
+  npx wrangler secret put DINK_SECRET   # interactive — paste a random string; don't pipe it (BOM, §7)
+  ```
+- **Verify the endpoint is live and gated** (no D1 write happens — bad key is
+  rejected before any parse):
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://osrs-clan-bot.ericbackman81.workers.dev/dink?key=WRONG"
+  # expect 401 (endpoint up, key gating works). 503 = DINK_SECRET not set yet.
+  ```
+  Then confirm a real event lands: have one clanmate (already set up per
+  `DINK_SETUP.md`) get a drop or boss kill, wait a few seconds, and run `/loot`
+  or `/pb` in Discord — or check the row count:
+  ```bash
+  npx wrangler d1 execute osrs_clan --remote --command "SELECT type, COUNT(*) n FROM dink_events GROUP BY type ORDER BY n DESC"
+  ```
+- **Share the key** with clanmates via Discord DM (never a public channel);
+  update `DINK_SETUP.md`'s placeholder only in a private paste, not in the repo.
+- **If it fails**: 401 for a clanmate who has the right key → check for a trailing
+  space/newline in their pasted URL. Events arriving but not stored → the sender's
+  RSN isn't in `players` (roster gate) — `/track add` them; or the event type is
+  intentionally dropped (not in `CAPTURED_TYPES`, e.g. DEATH/GE/TRADE).
+
 ## 4. Failure modes & recovery
 
 | Symptom | Cause | Fix | Verify |
@@ -202,6 +246,10 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 | `npm run register` exits 1 with a config message | `DISCORD_TOKEN`/`DISCORD_APPLICATION_ID`/`GUILD_ID` didn't resolve | Confirm `.dev.vars` exists (copy from `.dev.vars.example`) with a valid token, or the env var is set in-shell | Re-run `npm run register`; expect the `Registered N commands...` success line |
 | Interactions return HTTP 401 / Discord shows "app didn't respond" | `DISCORD_PUBLIC_KEY` mismatch, or the Discord bot token was rotated/expired without updating the Worker secret | Confirm `DISCORD_PUBLIC_KEY` in `wrangler.jsonc` matches the Developer Portal; if the token itself is bad, this is a stop-condition (section 6) — token rotation is Eric's | `/help` responds successfully in Discord after the secret is corrected |
 | A `scorePlayer`/`rankGains` edit breaks monotonicity | More XP in a skill lowered a player's score | `npm test` — `test/scoring.test.ts` "monotonicity" case goes red | Fix the scoring function until `npm test` is green; never edit the test to force a pass |
+| `/loot` or `/pb` says "No Dink … captured yet" for everyone | `DINK_SECRET` unset (endpoint 503s), no clanmate has set up the webhook, or the endpoint URL is wrong | OP-6: confirm the secret is set (`curl` returns 401 not 503) and at least one clanmate followed `DINK_SETUP.md`. Empty state is **expected** until someone opts in — WOM commands are unaffected | `SELECT COUNT(*) FROM dink_events` > 0; the row appears after a real in-game event |
+| A clanmate's drops/PBs never appear, but others' do | Their RSN isn't in `players` (roster gate silently ignores the event), or they didn't enable the matching Dink notifier (Loot / Kill Count) | `/track add <rsn>` (or `/iam`); have them tick the notifier. Check `wrangler tail` for `dink: ignoring … from untracked '<name>'` | Their events appear in `dink_events` after the next drop/kill |
+| Same drop counted twice on `/loot` | Would require two DB rows with different `dedup_key` for one event — shouldn't happen (stable natural key + INSERT OR IGNORE) | Rare — inspect the two rows' `dedup_key`; if a Dink schema change altered a keyed field, reconcile in `dedupKeyFor` (`src/dink.ts`). Do **not** hand-delete rows | Each real event has exactly one `dink_events` row (UNIQUE on `dedup_key`) |
+| `POST /dink` returns 401 for a set-up clanmate | Wrong/rotated key, or a trailing space/newline in their pasted webhook URL | Re-share the exact key (OP-6); have them re-paste the URL on one line | `curl … ?key=<correct>` with a minimal body no longer 401s |
 
 ## 5. Tuning knobs
 
@@ -216,6 +264,9 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 | Leaderboard/drops display cap | `src/index.ts` `boardLines(ranked, limit = 15)` line 61; `/drops` handler `.slice(0, 15)` line 258 | 15 | cosmetic — any positive integer | agent |
 | Core seed roster | `wrangler.jsonc` `vars.SEED_PLAYERS`; reconciled by `src/store.ts` `ensureSeedPlayers` (OP-5) | `BodyMeat, IrnmnOfPants, rolf it` (RSN-only, public repo) | comma-sep `RSN`/`RSN=discordId`; additive only (never removes/clobbers) | agent may edit the *string*; **membership** is Eric's call |
 | Seed merge policy (seed vs `/iam`) | `src/store.ts` `ensureSeedPlayers`, the `WHERE ... discord_user_id IS NULL` guard | member's `/iam` link wins over the seed | flip to seed-wins only with Eric's OK — would overwrite members' self-set links | **Eric** |
+| `dropScore()` "biggest drop" metric | `src/dink.ts` (boxed "MAKE IT YOURS" comment); `test/dink.test.ts` pins the baseline | raw gp value | any function of (value, rarity) — e.g. weight rarity to reward luck over gear. If it leans on rarity, widen `topLootRowsSince`'s value-ordered prefilter too | **Eric** — it's a ranking-semantics call, like `scorePlayer` |
+| Dink privacy allowlist (`CAPTURED_TYPES`) | `src/dink.ts` — the set of stored event types | public tier only (loot/KC/pet/clue/level/quest/diary/CA/…); DEATH/GE/TRADE/GROUP_STORAGE/CHAT dropped on arrival | adding a type = the bot starts storing + can surface it; **what the clan broadcasts is Eric's call** (§6). Removing a type stops new capture (no backfill) | **Eric** approves opting a sensitive type in; agent may edit the set on his say-so |
+| `DINK_SECRET` (endpoint key) | Worker **secret** (`wrangler secret put DINK_SECRET`); set/rotate via OP-6 | set out-of-band (not in repo) | any random string; rotate if leaked. Blank/unset → `/dink` fails closed (503) | agent may rotate (mechanical); Eric holds/shares the value |
 
 ## 6. Escalate to Eric (stop conditions)
 
@@ -225,9 +276,14 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   token rotation happens in the Developer Portal, Eric's account.
 - Wise Old Man starts returning repeated 429s across the whole roster (not one
   player) — a contact/API-key decision is Eric's, not a code fix.
-- Any request to build a deferred feature: Dink named-item drops, a CF
-  dashboard, or `/ask` (LLM command reading `ANTHROPIC_API_KEY` per
-  `.dev.vars.example`) — these are unbuilt product decisions pending Eric.
+- Any request to build a still-deferred feature: a CF dashboard, or `/ask` (LLM
+  command reading `ANTHROPIC_API_KEY` per `.dev.vars.example`) — unbuilt product
+  decisions pending Eric. (Dink **named-item drops** shipped 2026-07-18, §8.)
+- Expanding what the Dink layer captures or posts beyond the shipped scope:
+  opting a **privacy-sensitive** type into `CAPTURED_TYPES` (deaths, GE, trades,
+  group storage, chat), or turning on **real-time channel posting** for Dink
+  events (currently silent-capture only). Both change what the clan sees / what
+  personal data is stored — Eric's call, per `DINK_ROADMAP.md` privacy tiers.
 - Changing what the bot posts publicly in the clan channel beyond what
   `/config` already exposes (new message formats/cadence) — Eric approves what
   the clan sees.
@@ -255,9 +311,17 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 - **Never** shrink or remove the WOM `User-Agent` (`src/wom.ts`) or the 300ms
   per-player delay (`src/index.ts`) — the free WOM API asks for polite,
   identifiable usage; losing that risks the whole roster getting rate-limited.
-- **Never** add game-automation or RuneLite-plugin-dependent features — the
-  bot's entire premise is ToS-safe, read-only public stats (README opening
-  line). This is a hard product boundary, not a style preference.
+- **Never** add game-automation features — no logging in, clicking, or
+  automating gameplay. The bot observes and reports only; this is the hard,
+  non-negotiable ToS boundary.
+- **RuneLite/Dink integration is now allowed** (revised 2026-07-18, Eric-approved,
+  §8). Rationale: Dink is ToS-safe — it *observes the player's own client and
+  reports*, exactly like the bot; RuneLite is Jagex-sanctioned. The old "no
+  plugin-dependent features" line was about **zero-install friction**, not safety,
+  and the clan opted in. Guardrails that remain: (a) WOM stays the universal
+  baseline — Dink is additive, never a replacement, so a non-Dink member loses
+  nothing; (b) capture only the public tier (`CAPTURED_TYPES`); (c) silent-capture
+  — no new public posting without Eric (§6).
 - **Do not** change `scorePlayer`'s ranking semantics without Eric — it's
   explicitly his metric. Mechanical/refactor changes must keep
   `test/scoring.test.ts` green.
@@ -303,3 +367,20 @@ Update this playbook in the SAME change as any operation change.
   **Dink → Discord** live drop feed (client→webhook, no bot code) for real-time
   named drops; the Phase-2 *bot-side* named-drop leaderboard (webhook receiver +
   `drops` table) remains deferred per §6.
+- 2026-07-18 — **Dink receiver shipped (Phase 0 + Phase 1)**. The whole clan now
+  runs Dink, so Eric lifted the "no plugin-dependent features" boundary (§7,
+  revised — safety was never the issue; it was zero-install friction, now moot).
+  New: `POST /dink` route + `handleDink` (auth via `DINK_SECRET`, roster-gated,
+  multipart/JSON body, silent capture) in `src/index.ts`; pure normalizer
+  `src/dink.ts` (`parseDinkEvent`, privacy allowlist `CAPTURED_TYPES`, tunable
+  `dropScore`, `formatGp`/`formatDuration`); `dink_events` table (additive) +
+  Store methods; `/loot` + `/pb` commands (9→11). Tests: `test/dink.test.ts` (13).
+  **Deliberately NOT shipped** (still Eric-gated, §6): real-time channel posting
+  (silent-capture only, so no double-post vs the raw Dink→Discord feed) and the
+  privacy-sensitive tiers (deaths/GE/trades — dropped on arrival). New docs:
+  `DINK_ROADMAP.md` (full menu), `DINK_SETUP.md` (player onboarding). New knobs
+  (§5): `dropScore`, `CAPTURED_TYPES`, `DINK_SECRET`. New op: OP-6 (secret +
+  endpoint verify). **Deploy order**: `wrangler secret put DINK_SECRET` (OP-6) →
+  apply schema (OP-4, adds `dink_events`) → deploy (OP-2) → re-register 11
+  commands (OP-3). All 37 tests green + `tsc` clean pre-deploy. First real event
+  from a set-up clanmate confirms the path (OP-6 verify).

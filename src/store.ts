@@ -2,6 +2,7 @@
 
 import type { PlayerGains, SkillGain } from "./scoring";
 import type { WomPlayer } from "./wom";
+import type { DinkEvent } from "./dink"; // type-only — the runtime edge is dink -> store (canonicalRsn)
 
 export interface PlayerRow {
   rsn: string;
@@ -25,6 +26,27 @@ export interface GainRow {
   displayName: string;
   discordUserId: string | null;
   gained: number;
+}
+
+/** One Dink loot event, for the "biggest drop" highlight (`/loot`). */
+export interface LootRow {
+  rsn: string;
+  displayName: string;
+  discordUserId: string | null;
+  item: string | null;
+  value: number;
+  rarity: number | null;
+  source: string | null;
+  kc: number | null;
+}
+
+/** A boss personal-best time, for `/pb`. */
+export interface PbRow {
+  rsn: string;
+  displayName: string;
+  discordUserId: string | null;
+  pbSeconds: number;
+  source: string | null;
 }
 
 /** Sentinel milestone row marking "we've seeded this player" (see schema.sql). */
@@ -591,5 +613,113 @@ export class Store {
       "INSERT OR IGNORE INTO announced_milestones(rsn, milestone, announced_at) VALUES(?, ?, ?)",
     );
     await this.db.batch(names.map((n) => stmt.bind(rsn, n, at)));
+  }
+
+  // ── Dink events (real-time push source — see src/dink.ts) ────────────────────
+
+  /**
+   * Insert one normalized Dink event. INSERT OR IGNORE on the stable `dedup_key`
+   * makes Dink's identical retries idempotent (same pattern as snapshots). Returns
+   * true if the row was new (false = a duplicate/retry we correctly dropped).
+   */
+  async recordDinkEvent(rsn: string, ev: DinkEvent, receivedAt: string): Promise<boolean> {
+    const res = await this.db
+      .prepare(
+        "INSERT OR IGNORE INTO dink_events" +
+          "(rsn, type, occurred_at, source, item, item_id, quantity, value, rarity, kc, pb_seconds, detail, account_hash, dedup_key) " +
+          "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        rsn,
+        ev.type,
+        receivedAt,
+        ev.source,
+        ev.item,
+        ev.itemId,
+        ev.quantity,
+        ev.value,
+        ev.rarity,
+        ev.kc,
+        ev.pbSeconds,
+        ev.detail,
+        ev.accountHash,
+        ev.dedupKey,
+      )
+      .run();
+    return (res.meta.changes ?? 0) > 0;
+  }
+
+  /** Total captured Dink events — only used to give `/loot` and `/pb` a helpful
+   *  empty state ("no data yet — here's the setup guide") vs "none in this window". */
+  async dinkEventCount(): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) AS n FROM dink_events")
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** Total loot gp per player since the cutoff, best-first. */
+  async lootValueSince(cutoffIso: string): Promise<GainRow[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT e.rsn AS rsn, p.display_name AS displayName, p.discord_user_id AS discordUserId, " +
+          "SUM(e.value) AS gained " +
+          "FROM dink_events e JOIN players p ON p.rsn = e.rsn " +
+          "WHERE e.type = 'LOOT' AND e.value IS NOT NULL AND e.occurred_at >= ? " +
+          "GROUP BY e.rsn HAVING gained > 0 ORDER BY gained DESC",
+      )
+      .bind(cutoffIso)
+      .all<GainRow>();
+    return results;
+  }
+
+  /**
+   * Highest-value loot rows since the cutoff — candidates for the "biggest drop"
+   * highlight, which the handler re-ranks via dropScore() (tunable). Value-ordered
+   * prefilter keeps this cheap; widen `limit` if dropScore weights heavily on rarity.
+   */
+  async topLootRowsSince(cutoffIso: string, limit = 25): Promise<LootRow[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT e.rsn AS rsn, p.display_name AS displayName, p.discord_user_id AS discordUserId, " +
+          "e.item AS item, e.value AS value, e.rarity AS rarity, e.source AS source, e.kc AS kc " +
+          "FROM dink_events e JOIN players p ON p.rsn = e.rsn " +
+          "WHERE e.type = 'LOOT' AND e.value IS NOT NULL AND e.occurred_at >= ? " +
+          "ORDER BY e.value DESC LIMIT ?",
+      )
+      .bind(cutoffIso, limit)
+      .all<LootRow>();
+    return results;
+  }
+
+  /** Fastest recorded PB per player for one boss (case-insensitive on Dink's boss
+   *  spelling), fastest-first. */
+  async bestPbForBoss(boss: string): Promise<PbRow[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT e.rsn AS rsn, p.display_name AS displayName, p.discord_user_id AS discordUserId, " +
+          "MIN(e.pb_seconds) AS pbSeconds, e.source AS source " +
+          "FROM dink_events e JOIN players p ON p.rsn = e.rsn " +
+          "WHERE e.type = 'KILL_COUNT' AND e.pb_seconds IS NOT NULL AND LOWER(e.source) = LOWER(?) " +
+          "GROUP BY e.rsn ORDER BY pbSeconds ASC",
+      )
+      .bind(boss)
+      .all<PbRow>();
+    return results;
+  }
+
+  /** Most recent PB events across the clan (any boss), newest-first. */
+  async recentPbs(limit = 15): Promise<PbRow[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT e.rsn AS rsn, p.display_name AS displayName, p.discord_user_id AS discordUserId, " +
+          "e.pb_seconds AS pbSeconds, e.source AS source " +
+          "FROM dink_events e JOIN players p ON p.rsn = e.rsn " +
+          "WHERE e.type = 'KILL_COUNT' AND e.pb_seconds IS NOT NULL " +
+          "ORDER BY e.occurred_at DESC LIMIT ?",
+      )
+      .bind(limit)
+      .all<PbRow>();
+    return results;
   }
 }

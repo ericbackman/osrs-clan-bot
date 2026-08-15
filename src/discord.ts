@@ -120,6 +120,12 @@ async function rest(
   );
 }
 
+// User-supplied strings (RSNs) flow into these payloads; suppress all pings
+// unless a caller explicitly opts in with its own allowed_mentions.
+function withNoMentions(payload: object): object {
+  return { allowed_mentions: { parse: [] }, ...payload };
+}
+
 /** Replace the deferred ("thinking…") message once slow work completes. */
 export async function editOriginalResponse(
   env: Env,
@@ -130,7 +136,7 @@ export async function editOriginalResponse(
     env,
     "PATCH",
     `/webhooks/${env.DISCORD_APPLICATION_ID}/${interactionToken}/messages/@original`,
-    payload,
+    withNoMentions(payload),
   );
 }
 
@@ -140,7 +146,7 @@ export async function postToChannel(
   channelId: string,
   payload: object,
 ): Promise<void> {
-  await rest(env, "POST", `/channels/${channelId}/messages`, payload);
+  await rest(env, "POST", `/channels/${channelId}/messages`, withNoMentions(payload));
 }
 
 // ── interaction field helpers (interaction shape is loosely typed `any`, as in

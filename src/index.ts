@@ -64,17 +64,21 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+// User-supplied strings (RSNs) are echoed into non-ephemeral messages; without
+// this an RSN like "@everyone" would ping the whole server.
+const NO_MENTIONS = { parse: [] };
+
 function reply(content: string, ephemeral = true): Response {
   return json({
     type: ResponseType.CHANNEL_MESSAGE,
-    data: { content, flags: ephemeral ? EPHEMERAL : 0 },
+    data: { content, flags: ephemeral ? EPHEMERAL : 0, allowed_mentions: NO_MENTIONS },
   });
 }
 
 function replyEmbed(embed: object, ephemeral = false): Response {
   return json({
     type: ResponseType.CHANNEL_MESSAGE,
-    data: { embeds: [embed], flags: ephemeral ? EPHEMERAL : 0 },
+    data: { embeds: [embed], flags: ephemeral ? EPHEMERAL : 0, allowed_mentions: NO_MENTIONS },
   });
 }
 

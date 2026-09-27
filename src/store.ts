@@ -175,13 +175,32 @@ export class Store {
     return results;
   }
 
-  /** Who created this player's row: a Discord user id, or null for seeded rows. */
-  async addedBy(rsn: string): Promise<string | null> {
-    const row = await this.db
-      .prepare("SELECT added_by FROM players WHERE rsn = ?")
-      .bind(canonicalRsn(rsn))
-      .first<{ added_by: string | null }>();
-    return row?.added_by ?? null;
+  /**
+   * Record an admin as the row's voucher. `/track add` calls this so a row a
+   * member first created with `/iam` becomes admin-vouched (addPlayer alone is
+   * INSERT OR IGNORE and would leave the member as `added_by` forever).
+   */
+  async vouch(rsn: string, adminId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE players SET added_by = ? WHERE rsn = ?")
+      .bind(adminId, canonicalRsn(rsn))
+      .run();
+  }
+
+  /**
+   * The player linked to this Discord user whose row someone else created (an
+   * admin's `/track add`, or the seed, whose added_by is 'seed'). Rows a member
+   * created for themselves via `/iam` don't count. Gates `/dink setup`.
+   */
+  async vouchedPlayerFor(discordUserId: string): Promise<PlayerRow | null> {
+    return this.db
+      .prepare(
+        "SELECT rsn, display_name, discord_user_id FROM players " +
+          "WHERE discord_user_id = ? AND (added_by IS NULL OR added_by <> ?) " +
+          "ORDER BY rsn LIMIT 1",
+      )
+      .bind(discordUserId, discordUserId)
+      .first<PlayerRow>();
   }
 
   async resolveRsn(

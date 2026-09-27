@@ -107,5 +107,5 @@ on `/loot` or `/pb`.
 |---|---|
 | Nothing shows on `/loot` or `/pb` | Double-check the URL + `key=` are exact (no trailing spaces, correct key from Eric). Make sure the matching notifier (Loot / Kill Count) is ticked in Dink. |
 | "No personal bests for X" | Use the spelling Dink shows in-game (e.g. `Zulrah`, `Vorkath`, `TzKal-Zuk`). PBs only count *timed* kills after setup — old kills won't backfill. |
-| Your RSN isn't tracked | Ask Eric to `/track add <your rsn>` (or `/iam <rsn>` to link your Discord). |
+| Your RSN isn't tracked | Ask Eric to `/track add <your rsn> @you`. |
 | Still stuck | Ping Eric — he can check the logs to see if your events are arriving. |

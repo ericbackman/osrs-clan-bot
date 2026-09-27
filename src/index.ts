@@ -236,6 +236,7 @@ async function handleTrack(
         let text: string;
         try {
           const added = await store.addPlayer(rsn, rsn, by, addedAt);
+          await store.vouch(rsn, by); // an admin add vouches for a row first made by /iam
           if (member) await store.linkDiscord(rsn, member, rsn, by, addedAt);
           const p = await wom.updatePlayer(rsn);
           await store.insertSnapshot(canonicalRsn(rsn), addedAt, p);
@@ -539,10 +540,11 @@ async function handleDinkSetup(
     return reply("⚠️ The Dink receiver isn't configured yet (no key set). Ping Eric.");
   }
   const uid = userId(interaction);
-  const player = await store.resolveRsn(null, uid);
   // Manage Server (0x20) = the same admins who can /track add; they may add themselves.
   const isAdmin = (BigInt(interaction.member?.permissions ?? "0") & 0x20n) !== 0n;
-  if (!player || (!isAdmin && (await store.addedBy(player.rsn)) === uid)) {
+  const player =
+    (await store.vouchedPlayerFor(uid)) ?? (isAdmin ? await store.resolveRsn(null, uid) : null);
+  if (!player) {
     return reply(
       "You need to be on the roster first: ask an admin to `/track add <rsn> @you`, " +
         "then run `/dink setup` again.",
@@ -748,20 +750,67 @@ async function runDailySnapshot(env: Env): Promise<void> {
 
 // ── Dink receiver: real-time in-game events pushed from the RuneLite plugin ────
 
+/** Screenshots ride along as multipart; anything past this is not a Dink event. */
+const MAX_DINK_BODY_BYTES = 8 * 1024 * 1024;
+
+class BodyTooLarge extends Error {}
+
+/**
+ * Buffer the body, aborting past MAX_DINK_BODY_BYTES. Counts bytes as they
+ * stream, so a chunked upload with no (or a lying) content-length is capped too.
+ */
+async function readCappedBody(req: Request): Promise<Uint8Array> {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_DINK_BODY_BYTES) throw new BodyTooLarge();
+  if (!req.body) return new Uint8Array();
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_DINK_BODY_BYTES) {
+      await reader.cancel();
+      throw new BodyTooLarge();
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
+}
+
 /**
  * Read a Dink webhook body: JSON by default, or multipart when a screenshot is
  * attached (we read `payload_json` and ignore the image — so players never have
- * to disable screenshots). Throws on a malformed body so the caller can 400.
+ * to disable screenshots). Throws BodyTooLarge past the cap, and on a malformed
+ * body so the caller can 400.
  */
 async function readDinkBody(req: Request): Promise<any> {
   const ct = req.headers.get("content-type") ?? "";
+  const bytes = await readCappedBody(req);
   if (ct.includes("multipart/form-data")) {
-    const form = await req.formData();
+    const form = await new Response(bytes, { headers: { "content-type": ct } }).formData();
     const pj = form.get("payload_json");
     if (typeof pj !== "string") throw new Error("multipart without payload_json");
     return JSON.parse(pj);
   }
-  return await req.json();
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+/** Constant-time secret compare: hash both sides so lengths match, then timingSafeEqual. */
+async function secretMatches(given: string, secret: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(given)),
+    crypto.subtle.digest("SHA-256", enc.encode(secret)),
+  ]);
+  return crypto.subtle.timingSafeEqual(a, b);
 }
 
 /**
@@ -776,21 +825,9 @@ async function readDinkBody(req: Request): Promise<any> {
  * the sender is that player, so a key holder can post events for any clanmate.
  * Binding the first-seen account_hash per RSN would close that; not done yet.
  * Returns 2xx for accepted OR ignored so Dink doesn't retry-storm; 401 only on a
- * bad key; 500 only on a real store error (idempotent, so a Dink retry is safe).
+ * bad key; 413 over the body cap; 500 only on a real store error (idempotent,
+ * so a Dink retry is safe).
  */
-/** Screenshots ride along as multipart; anything past this is not a Dink event. */
-const MAX_DINK_BODY_BYTES = 8 * 1024 * 1024;
-
-/** Constant-time secret compare: hash both sides so lengths match, then timingSafeEqual. */
-async function secretMatches(given: string, secret: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [a, b] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(given)),
-    crypto.subtle.digest("SHA-256", enc.encode(secret)),
-  ]);
-  return crypto.subtle.timingSafeEqual(a, b);
-}
-
 async function handleDink(req: Request, env: Env, url: URL): Promise<Response> {
   if (!env.DINK_SECRET) {
     console.error("dink: DINK_SECRET not configured — rejecting POST /dink");
@@ -800,13 +837,12 @@ async function handleDink(req: Request, env: Env, url: URL): Promise<Response> {
   if (!(await secretMatches(key, env.DINK_SECRET))) {
     return new Response("bad dink key", { status: 401 });
   }
-  const len = Number(req.headers.get("content-length") ?? 0);
-  if (len > MAX_DINK_BODY_BYTES) return new Response("body too large", { status: 413 });
 
   let payload: any;
   try {
     payload = await readDinkBody(req);
   } catch (e) {
+    if (e instanceof BodyTooLarge) return new Response("body too large", { status: 413 });
     console.error(`dink: body parse failed: ${(e as Error).message}`);
     return new Response("bad body", { status: 400 });
   }

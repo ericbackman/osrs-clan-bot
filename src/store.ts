@@ -175,6 +175,15 @@ export class Store {
     return results;
   }
 
+  /** Who created this player's row: a Discord user id, or null for seeded rows. */
+  async addedBy(rsn: string): Promise<string | null> {
+    const row = await this.db
+      .prepare("SELECT added_by FROM players WHERE rsn = ?")
+      .bind(canonicalRsn(rsn))
+      .first<{ added_by: string | null }>();
+    return row?.added_by ?? null;
+  }
+
   async resolveRsn(
     rsn: string | null,
     discordUserId: string | null,

@@ -225,8 +225,10 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   npx wrangler d1 execute osrs_clan --remote --command "SELECT type, COUNT(*) n FROM dink_events GROUP BY type ORDER BY n DESC"
   ```
 - **Share the key** by pointing clanmates at `/dink setup`: it replies
-  ephemerally with the full webhook URL, key filled in, and only to members
-  linked to a tracked RSN (`/iam`). After a rotation, everyone re-runs it and
+  ephemerally with the full webhook URL, key filled in, to members linked to a
+  player an admin added (`/track add` or the seed); admins always pass. A member
+  can still `/iam` onto an unlinked admin-added RSN, so the real boundary is
+  "server members", accepted for a friends-only server. After a rotation, everyone re-runs it and
   re-pastes. Never put the key in the repo or a public channel.
 - **If it fails**: 401 for a clanmate who has the right key → check for a trailing
   space/newline in their pasted URL. Events arriving but not stored → the sender's

@@ -66,22 +66,40 @@ export interface DinkEvent {
   dedupKey: string; // STABLE natural key (excludes receive time) for INSERT OR IGNORE
 }
 
+/** Longest string kept from a payload field: keeps embeds under Discord's caps and D1 rows small. */
+export const MAX_FIELD = 100;
+/** Most skills one LEVEL event can carry (there are 24); more is a malformed payload. */
+const MAX_LEVELLED_SKILLS = 30;
+/** LOOT events without a kill count dedup within this window (covers Dink's retries). */
+export const LOOT_DEDUP_WINDOW_MS = 10 * 60_000;
+
 function num(v: unknown): number | null {
+  // Dink sends explicit nulls; Number(null) and Number("") are 0, which would
+  // store a fake rarity or kc. Only numbers and numeric strings count.
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v !== "string" || !v.trim()) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
 function str(v: unknown): string | null {
-  return typeof v === "string" && v.trim().length ? v.trim() : null;
+  return typeof v === "string" && v.trim().length ? v.trim().slice(0, MAX_FIELD) : null;
 }
 
-/** Parse a duration Dink may send as seconds (92.4) or "m:ss.d" ("1:32.40"). */
+/**
+ * Parse a Dink duration. KILL_COUNT sends ISO-8601 ("PT46M34S", "PT1M32.4S");
+ * SPEEDRUN sends "m:ss.dd"; plain seconds are accepted too.
+ */
 export function parseDuration(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string") {
-    const m = v.trim().match(/^(?:(\d+):)?(\d+(?:\.\d+)?)$/);
-    if (m) return (m[1] ? Number(m[1]) * 60 : 0) + Number(m[2]);
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  const iso = t.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/);
+  if (iso && (iso[1] || iso[2] || iso[3])) {
+    return Number(iso[1] ?? 0) * 3600 + Number(iso[2] ?? 0) * 60 + Number(iso[3] ?? 0);
   }
+  const m = t.match(/^(?:(\d+):)?(\d+(?:\.\d+)?)$/);
+  if (m) return (m[1] ? Number(m[1]) * 60 : 0) + Number(m[2]);
   return null;
 }
 
@@ -176,18 +194,30 @@ function fillClue(ev: Draft, x: Record<string, any>): void {
 function fillLevel(ev: Draft, x: Record<string, any>): void {
   const levelled: Record<string, any> =
     x.levelledSkills && typeof x.levelledSkills === "object" ? x.levelledSkills : {};
-  const names = Object.keys(levelled);
+  const names = Object.keys(levelled).slice(0, MAX_LEVELLED_SKILLS);
   if (!names.length) return;
-  ev.detail = names.map((s) => `${s} ${num(levelled[s]) ?? "?"}`).join(", ");
-  ev.item = names[0];
+  ev.detail = names
+    .map((s) => `${s.slice(0, 20)} ${num(levelled[s]) ?? "?"}`)
+    .join(", ")
+    .slice(0, MAX_FIELD);
+  ev.item = names[0].slice(0, MAX_FIELD);
 }
 
-/** Stable natural key per type — NEVER includes the receive time (see file header). */
-function dedupKeyFor(ev: Draft, raw: unknown): string {
+/**
+ * Stable natural key per type (see file header). One exception: LOOT without a
+ * kill count (Dink only sends killCount for NPC loot with RuneLite's Loot Tracker
+ * on) has nothing that tells two identical drops apart, so it gets a receive-time
+ * bucket. Retries inside the window still collapse; an identical drop in a later
+ * window counts. A retry straddling a bucket edge can double-count once, which
+ * beats silently dropping real loot.
+ */
+function dedupKeyFor(ev: Draft, raw: unknown, receivedAtMs: number): string {
   const p = canonicalRsn(ev.playerName);
   switch (ev.type) {
-    case "LOOT":
-      return `${p}|LOOT|${ev.source ?? ""}|${ev.kc ?? ""}|${ev.itemId ?? ""}|${ev.value ?? ""}`;
+    case "LOOT": {
+      const base = `${p}|LOOT|${ev.source ?? ""}|${ev.kc ?? ""}|${ev.itemId ?? ""}|${ev.value ?? ""}`;
+      return ev.kc !== null ? base : `${base}|t${Math.floor(receivedAtMs / LOOT_DEDUP_WINDOW_MS)}`;
+    }
     case "KILL_COUNT":
       return `${p}|KILL_COUNT|${ev.source ?? ""}|${ev.kc ?? ""}`;
     case "COLLECTION":
@@ -209,9 +239,9 @@ function dedupKeyFor(ev: Draft, raw: unknown): string {
  * (no player name, or no type). Unknown `type`s are still captured generically
  * so history accrues for features we haven't built yet.
  */
-export function parseDinkEvent(d: any): DinkEvent | null {
+export function parseDinkEvent(d: any, receivedAtMs: number = Date.now()): DinkEvent | null {
   if (!d || typeof d !== "object") return null;
-  const playerName = String(d.playerName ?? d.username ?? "").trim();
+  const playerName = String(d.playerName ?? d.username ?? "").trim().slice(0, MAX_FIELD);
   if (!playerName) return null;
   const type = String(d.type ?? "").trim().toUpperCase();
   if (!type) return null;
@@ -257,7 +287,7 @@ export function parseDinkEvent(d: any): DinkEvent | null {
       break; // generic capture — fields stay null, dedup by payload hash
   }
 
-  return { ...ev, dedupKey: dedupKeyFor(ev, d) };
+  return { ...ev, dedupKey: dedupKeyFor(ev, d, receivedAtMs) };
 }
 
 /**

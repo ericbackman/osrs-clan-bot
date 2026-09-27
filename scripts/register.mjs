@@ -186,6 +186,7 @@ const commands = [
         name: "boss",
         description: 'Boss name as Dink spells it (e.g. Zulrah). Omit for recent PBs.',
         required: false,
+        max_length: 64,
       },
     ],
   },

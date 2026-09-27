@@ -21,12 +21,12 @@ total loot value in the window, and calls out the single **biggest drop**:
 
 ```
 💰 Loot — last 7d
-🥇 @BodyMeat — 1.4B gp
-🥈 @rolf it — 340M gp
-🥉 @IrnmnOfPants — 96M gp
+🥇 @PlayerOne — 1.4B gp
+🥈 @player two — 340M gp
+🥉 @PlayerThree — 96M gp
 
 🏆 Biggest drop
-@BodyMeat — Twisted bow (1.2B gp) from Chambers of Xeric
+@PlayerOne — Twisted bow (1.2B gp) from Chambers of Xeric
 ```
 
 The old `/drops` only knew *"someone got a rare"* the next morning. `/loot` knows
@@ -40,16 +40,16 @@ it was a **Twisted bow, worth 1.2B, from CoX** — the moment it happened.
 
 ```
 ⏱️ Zulrah — fastest kills
-🥇 @rolf it — 1:32.40
-🥈 @BodyMeat — 1:41.80
+🥇 @player two — 1:32.40
+🥈 @PlayerOne — 1:41.80
 ```
 
 Plain `/pb` (no boss) shows the clan's most recent personal bests:
 
 ```
 ⏱️ Recent personal bests
-• @BodyMeat — Vorkath in 2:14.60
-• @rolf it — Zulrah in 1:32.40
+• @PlayerOne — Vorkath in 2:14.60
+• @player two — Zulrah in 1:32.40
 ```
 
 **Why this is a big deal:** boss PB times don't exist on the hiscores *at all*.

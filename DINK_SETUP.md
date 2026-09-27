@@ -44,7 +44,8 @@ destination. (No Dink yet? In RuneLite: **Configuration 🔧 → Plugin Hub → 
    **new line** in that box, keeping your existing Discord line (both work at once).
 
    > 🔑 The link contains the clan's shared key. Don't post it in a public
-   > channel. If `/dink setup` says to link first, run `/iam <your rsn>`.
+   > channel. If `/dink setup` says you need to be on the roster, ask Eric to
+   > `/track add` your RSN with your Discord @.
 
 5. Done. Really.
 

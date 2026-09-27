@@ -472,7 +472,7 @@ async function handleLoot(store: Store, interaction: any): Promise<Response> {
  * or the Hiscores at all — this board is only possible with Dink.
  */
 async function handlePb(store: Store, interaction: any): Promise<Response> {
-  const bossInput = (option(interaction, "boss") as string | undefined)?.trim();
+  const bossInput = (option(interaction, "boss") as string | undefined)?.trim().slice(0, 64);
 
   if (bossInput) {
     const rows = await store.bestPbForBoss(bossInput);
@@ -521,9 +521,11 @@ async function handlePb(store: Store, interaction: any): Promise<Response> {
 
 /**
  * /dink setup — hand the caller their webhook line with DINK_SECRET filled in,
- * ephemerally. Gated on the caller being linked to a tracked player: the key is
- * only useful for tracked RSNs anyway (the receiver roster-gates), and this keeps
- * it inside the clan rather than with anyone who can see the server. The origin
+ * ephemerally. Gated on the caller being linked to a player someone else added
+ * (an admin's `/track add`, or the seed roster), because `/iam` creates a row for
+ * any name typed. Real boundary: a server member can still `/iam` onto an
+ * unlinked admin-added RSN and pass. The key only lets its holder post events
+ * under roster names, so for a friends-only server that is accepted. The origin
  * comes from the request, so the link always matches the Worker that served it.
  */
 async function handleDinkSetup(
@@ -536,11 +538,14 @@ async function handleDinkSetup(
     console.error("dink setup: DINK_SECRET not configured");
     return reply("⚠️ The Dink receiver isn't configured yet (no key set). Ping Eric.");
   }
-  const player = await store.resolveRsn(null, userId(interaction));
-  if (!player) {
+  const uid = userId(interaction);
+  const player = await store.resolveRsn(null, uid);
+  // Manage Server (0x20) = the same admins who can /track add; they may add themselves.
+  const isAdmin = (BigInt(interaction.member?.permissions ?? "0") & 0x20n) !== 0n;
+  if (!player || (!isAdmin && (await store.addedBy(player.rsn)) === uid)) {
     return reply(
-      "Link your RuneScape name first: `/iam <rsn>`. If you're not on the roster yet, " +
-        "ask an admin to `/track add <rsn> @you`. Then run `/dink setup` again.",
+      "You need to be on the roster first: ask an admin to `/track add <rsn> @you`, " +
+        "then run `/dink setup` again.",
     );
   }
   return reply(dinkSetupMessage(origin, env.DINK_SECRET, player.display_name));
@@ -767,17 +772,36 @@ async function readDinkBody(req: Request): Promise<any> {
  *
  * Two guards: (1) DINK_SECRET (via `?key=` or `x-dink-key`) — the URL is shared
  * with clanmates but not public; (2) roster-gating — events from untracked RSNs
- * are ignored, so even a leaked URL can't inject fake drops for real players.
+ * are ignored. The roster gate limits writes to roster names; it does NOT prove
+ * the sender is that player, so a key holder can post events for any clanmate.
+ * Binding the first-seen account_hash per RSN would close that; not done yet.
  * Returns 2xx for accepted OR ignored so Dink doesn't retry-storm; 401 only on a
  * bad key; 500 only on a real store error (idempotent, so a Dink retry is safe).
  */
+/** Screenshots ride along as multipart; anything past this is not a Dink event. */
+const MAX_DINK_BODY_BYTES = 8 * 1024 * 1024;
+
+/** Constant-time secret compare: hash both sides so lengths match, then timingSafeEqual. */
+async function secretMatches(given: string, secret: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(given)),
+    crypto.subtle.digest("SHA-256", enc.encode(secret)),
+  ]);
+  return crypto.subtle.timingSafeEqual(a, b);
+}
+
 async function handleDink(req: Request, env: Env, url: URL): Promise<Response> {
   if (!env.DINK_SECRET) {
     console.error("dink: DINK_SECRET not configured — rejecting POST /dink");
     return new Response("dink receiver not configured", { status: 503 });
   }
-  const key = url.searchParams.get("key") ?? req.headers.get("x-dink-key");
-  if (key !== env.DINK_SECRET) return new Response("bad dink key", { status: 401 });
+  const key = url.searchParams.get("key") ?? req.headers.get("x-dink-key") ?? "";
+  if (!(await secretMatches(key, env.DINK_SECRET))) {
+    return new Response("bad dink key", { status: 401 });
+  }
+  const len = Number(req.headers.get("content-length") ?? 0);
+  if (len > MAX_DINK_BODY_BYTES) return new Response("body too large", { status: 413 });
 
   let payload: any;
   try {
@@ -788,20 +812,23 @@ async function handleDink(req: Request, env: Env, url: URL): Promise<Response> {
   }
 
   const ev = parseDinkEvent(payload);
-  if (!ev) return new Response("ignored (unparseable)", { status: 202 });
-
-  const store = new Store(env.DB);
-  const player = await store.resolveRsn(ev.playerName, null);
-  if (!player) {
-    console.log(`dink: ignoring ${ev.type} from untracked '${ev.playerName}'`);
-    return new Response("untracked player", { status: 202 });
+  if (!ev) {
+    // Unparseable, or a type outside the privacy allowlist (DEATH, TRADE, GE...).
+    console.log(`dink: dropped type '${String(payload?.type ?? "?").slice(0, 40)}'`);
+    return new Response("ignored", { status: 202 });
   }
 
+  const store = new Store(env.DB);
   try {
+    const player = await store.resolveRsn(ev.playerName, null);
+    if (!player) {
+      console.log(`dink: ignoring ${ev.type} from untracked '${ev.playerName}'`);
+      return new Response("untracked player", { status: 202 });
+    }
     const isNew = await store.recordDinkEvent(player.rsn, ev, new Date().toISOString());
     return new Response(isNew ? "ok" : "duplicate", { status: 200 });
   } catch (e) {
-    console.error(`dink: store failed for ${player.rsn}: ${(e as Error).message}`);
+    console.error(`dink: store failed for '${ev.playerName}': ${(e as Error).message}`);
     return new Response("store error", { status: 500 }); // Dink retries; INSERT OR IGNORE makes it safe
   }
 }

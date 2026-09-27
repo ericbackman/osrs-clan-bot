@@ -1,10 +1,10 @@
 # osrs-clan-bot
 
 A Discord bot that tracks an Old School RuneScape friend group's stats and gains,
-so the clan can race XP and flex grinds — **without anyone logging into a game or
+so the clan can race XP and flex grinds: **without anyone logging into a game or
 running anything sketchy.** It reads public stats from the **Wise Old Man** API,
 stores them in Cloudflare **D1**, and serves everything from a Cloudflare
-**Worker**. (No game automation — this is the opposite of a botting client.)
+**Worker**. (No game automation, this is the opposite of a botting client.)
 
 Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 
@@ -12,19 +12,19 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 
 - **Tracks players** by RuneScape name and (optionally) links them to a Discord
   user so the leaderboard can @-mention people.
-- **Snapshots everyone nightly** (08:00 UTC cron) via Wise Old Man — current
+- **Snapshots everyone nightly** (08:00 UTC cron) via Wise Old Man, current
   levels, XP, and EHP (efficient hours played).
 - **Leaderboards** the gains race over a day / week / month, for all skills or
   just one (e.g. a Slayer race).
 - **Tracks rare drops** by watching each player's Collection Log count (no plugin
-  needed) — announces "new rare drops!" overnight and ranks who's pulled the most
+  needed): announces "new rare drops!" overnight and ranks who's pulled the most
   uniques. It knows a rare drop *happened*, not which item.
-- **Celebrates milestones** — the morning after someone hits a 99, maxes, or
+- **Celebrates milestones.** The morning after someone hits a 99, maxes, or
   crosses 100M/200M XP (via Wise Old Man's achievements), plus a shout every N
   boss kills (computed from our own KC snapshots, since WOM's thresholds are too
   coarse for a not-yet-maxed clan). Chattiness + the KC interval are live admin
-  settings — `/config milestones` and `/config bosskc`.
-- **Ranks PvM & clues** — `/boss` for kill-count races (all bosses or one) and
+  settings: `/config milestones` and `/config bosskc`.
+- **Ranks PvM & clues**: `/boss` for kill-count races (all bosses or one) and
   `/clues` for clue-scroll caskets, both from the stats WOM already returns.
 - **Auto-posts** the weekly board to a channel you choose, on the cadence you set.
 - **Real-time drops & PBs (optional Dink layer)** — clanmates who run the RuneLite
@@ -50,7 +50,7 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 | `/loot [day\|week\|month]` | anyone | named-drop value race + biggest drop *(needs Dink — see [`DINK_SETUP.md`](DINK_SETUP.md))* |
 | `/pb [boss]` | anyone | boss personal-best times *(needs Dink)* |
 | `/stats <rsn \| @member>` | anyone | a player's current levels & XP |
-| `/config show` · `channel #channel` · `schedule daily\|weekly\|off` · `milestones all\|big\|off` · `bosskc 25\|50\|100\|250` | admin | live settings — no redeploy |
+| `/config show` · `channel #channel` · `schedule daily\|weekly\|off` · `milestones all\|big\|off` · `bosskc 25\|50\|100\|250` | admin | live settings: no redeploy |
 
 > Gains need a baseline, so `/leaderboard` fills in after the **second** nightly
 > snapshot. `/track add` grabs a first snapshot immediately, so `/stats` works
@@ -83,24 +83,23 @@ schema.sql       D1 tables
   against a clan's existing raw Dink→Discord feed. WOM stays the universal
   baseline; Dink is additive and per-player opt-in. Only public event types are
   stored (deaths/trades/GE are dropped on arrival). See [`DINK_SETUP.md`](DINK_SETUP.md).
-- **The roster self-heals.** Players live in D1 (durable — a redeploy never wipes
+- **The roster self-heals.** Players live in D1 (durable, a redeploy never wipes
   it), but the core clan is also declared in `SEED_PLAYERS` (`wrangler.jsonc`).
   The bot reconciles that list into D1 on every command and the nightly cron, so
   if the table is ever emptied (fresh/reset DB, or writes that went to a local
-  `wrangler dev` DB) the roster comes back on its own — no re-adding by hand. The
+  `wrangler dev` DB) the roster comes back on its own: no re-adding by hand. The
   seed only *adds*: `/track add` extras and `/iam` links are never removed or
   overwritten.
 - **Why no real "join" detection?** An interactions-only bot (no gateway socket)
-  can't see the raw "added to a server" event, so it greets on first use instead
-  — which also lands the welcome in a channel people are actually in.
+  can't see the raw "added to a server" event, so it greets on first use instead, which also lands the welcome in a channel people are actually in.
 
-## Tune the leaderboard — `src/scoring.ts`
+## Tune the leaderboard: `src/scoring.ts`
 
 `scorePlayer()` decides who's winning. It ships on a raw-XP baseline so the bot
-works today; swap in your own metric — levels gained, WOM EHP, or a diversity
+works today; swap in your own metric: levels gained, WOM EHP, or a diversity
 bonus that rewards training many skills over grinding one. Keep it monotonic and
 `test/scoring.test.ts` stays green. (Same decision as `score_player` in
-`data_explorer/osrs/` — design it there, port the winner here.)
+`data_explorer/osrs/`: design it there, port the winner here.)
 
 ## Setup (already done for the live deploy)
 

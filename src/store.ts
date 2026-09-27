@@ -137,22 +137,32 @@ export class Store {
     return (res.meta.changes ?? 0) > 0;
   }
 
-  /** /iam — upsert the player and attach the caller's Discord id. */
+  /**
+   * /iam — upsert the player and attach the caller's Discord id. Guarded
+   * against identity hijack: the ON CONFLICT update only fires when the rsn
+   * is unclaimed (discord_user_id IS NULL) or already owned by this same
+   * caller, so one member can't steal an RSN someone else already linked.
+   * Returns whether the link was actually applied — a fresh insert or a
+   * same-owner re-link both count as success; false means a DIFFERENT user
+   * already owns this rsn and the WHERE guard blocked the update.
+   */
   async linkDiscord(
     rsn: string,
     discordUserId: string,
     displayName: string,
     addedBy: string,
     addedAt: string,
-  ): Promise<void> {
-    await this.db
+  ): Promise<boolean> {
+    const res = await this.db
       .prepare(
         "INSERT INTO players(rsn, display_name, discord_user_id, added_by, added_at) " +
           "VALUES(?, ?, ?, ?, ?) " +
-          "ON CONFLICT(rsn) DO UPDATE SET discord_user_id = excluded.discord_user_id",
+          "ON CONFLICT(rsn) DO UPDATE SET discord_user_id = excluded.discord_user_id " +
+          "WHERE players.discord_user_id IS NULL OR players.discord_user_id = excluded.discord_user_id",
       )
       .bind(canonicalRsn(rsn), displayName.trim(), discordUserId, addedBy, addedAt)
       .run();
+    return (res.meta.changes ?? 0) > 0;
   }
 
   async listPlayers(): Promise<PlayerRow[]> {

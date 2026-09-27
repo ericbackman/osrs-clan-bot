@@ -178,12 +178,17 @@ export class Store {
   /**
    * Record an admin as the row's voucher. `/track add` calls this so a row a
    * member first created with `/iam` becomes admin-vouched (addPlayer alone is
-   * INSERT OR IGNORE and would leave the member as `added_by` forever).
+   * INSERT OR IGNORE and would leave the member as `added_by` forever). Only
+   * vouches a row that is unlinked or linked to `memberId`, so an admin add
+   * never vouches for someone squatting on the name.
    */
-  async vouch(rsn: string, adminId: string): Promise<void> {
+  async vouch(rsn: string, adminId: string, memberId: string | null): Promise<void> {
     await this.db
-      .prepare("UPDATE players SET added_by = ? WHERE rsn = ?")
-      .bind(adminId, canonicalRsn(rsn))
+      .prepare(
+        "UPDATE players SET added_by = ? WHERE rsn = ? " +
+          "AND (discord_user_id IS NULL OR discord_user_id = ?)",
+      )
+      .bind(adminId, canonicalRsn(rsn), memberId ?? "")
       .run();
   }
 

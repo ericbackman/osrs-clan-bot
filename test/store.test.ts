@@ -95,7 +95,7 @@ describe("Store.vouchedPlayerFor — /dink setup gate", () => {
     const store = new Store(makeFakeD1());
     await store.linkDiscord("Zezima", "user1", "Zezima", "user1", "t1");
     await store.addPlayer("Zezima", "Zezima", "admin1", "t2"); // INSERT OR IGNORE: no-op
-    await store.vouch("Zezima", "admin1");
+    await store.vouch("Zezima", "admin1", "user1");
     expect((await store.vouchedPlayerFor("user1"))?.rsn).toBe("zezima");
   });
 
@@ -104,5 +104,14 @@ describe("Store.vouchedPlayerFor — /dink setup gate", () => {
     await store.addPlayer("Zezima", "Zezima", "admin1", "t1");
     await store.linkDiscord("Zezima", "user1", "Zezima", "admin1", "t1");
     expect((await store.vouchedPlayerFor("user1"))?.rsn).toBe("zezima");
+  });
+});
+
+describe("Store.vouch — never vouches for a squatter", () => {
+  it("leaves a row linked to someone else unvouched", async () => {
+    const store = new Store(makeFakeD1());
+    await store.linkDiscord("Zezima", "squatter", "Zezima", "squatter", "t1");
+    await store.vouch("Zezima", "admin1", "realOwner");
+    expect(await store.vouchedPlayerFor("squatter")).toBeNull();
   });
 });

@@ -236,8 +236,17 @@ async function handleTrack(
         let text: string;
         try {
           const added = await store.addPlayer(rsn, rsn, by, addedAt);
-          await store.vouch(rsn, by); // an admin add vouches for a row first made by /iam
-          if (member) await store.linkDiscord(rsn, member, rsn, by, addedAt);
+          const linked = member ? await store.linkDiscord(rsn, member, rsn, by, addedAt) : true;
+          if (!linked) {
+            const owner = (await store.resolveRsn(rsn, null))?.discord_user_id;
+            await editOriginalResponse(env, interaction.token, {
+              content: `⚠️ **${rsn}** is already linked to <@${owner}>, not <@${member}>. Nothing changed.`,
+              allowed_mentions: { parse: [] },
+            });
+            return;
+          }
+          // An admin add vouches for a row first made by /iam (gates /dink setup).
+          await store.vouch(rsn, by, member ?? null);
           const p = await wom.updatePlayer(rsn);
           await store.insertSnapshot(canonicalRsn(rsn), addedAt, p);
           text =

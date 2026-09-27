@@ -6,6 +6,7 @@ import {
   dropScore,
   formatGp,
   formatDuration,
+  dinkSetupMessage,
 } from "../src/dink";
 
 describe("parseDinkEvent — LOOT", () => {
@@ -174,5 +175,22 @@ describe("formatGp / formatDuration", () => {
   it("formats PB times as m:ss.dd", () => {
     expect(formatDuration(92.4)).toBe("1:32.40");
     expect(formatDuration(9.4)).toBe("0:09.40");
+  });
+});
+
+describe("dinkSetupMessage", () => {
+  it("embeds the exact webhook URL with the key URI-encoded", () => {
+    const msg = dinkSetupMessage("https://bot.example.dev", "a b&c", "BodyMeat");
+    expect(msg).toContain("https://bot.example.dev/dink?key=a%20b%26c");
+    expect(msg).toContain("BodyMeat");
+  });
+
+  it("puts the URL alone on its own line inside a code block", () => {
+    const msg = dinkSetupMessage("https://bot.example.dev", "k3y", "x");
+    expect(msg).toContain("```\nhttps://bot.example.dev/dink?key=k3y\n```");
+  });
+
+  it("fits in one Discord message", () => {
+    expect(dinkSetupMessage("https://osrs-clan-bot.ericbackman81.workers.dev", "x".repeat(64), "A".repeat(12)).length).toBeLessThan(2000);
   });
 });

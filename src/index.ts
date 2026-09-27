@@ -27,7 +27,7 @@ import {
   DEFAULT_BOSS_KC_INTERVAL,
   type MilestoneMode,
 } from "./milestones";
-import { parseDinkEvent, dropScore, formatGp, formatDuration } from "./dink";
+import { parseDinkEvent, dropScore, formatGp, formatDuration, dinkSetupMessage } from "./dink";
 
 const DAY_MS = 86_400_000;
 
@@ -141,8 +141,9 @@ function helpEmbed(): object {
           "`/stats <rsn | @member>` — a player's current levels & XP",
       },
       {
-        name: "Real-time extras (need the Dink plugin — see DINK_SETUP.md)",
+        name: "Real-time extras (need the RuneLite Dink plugin)",
         value:
+          "`/dink setup` — your personal webhook link + the 1-minute RuneLite steps\n" +
           "`/loot [day|week|month]` — named-drop value board + biggest drop\n" +
           "`/pb [boss]` — boss personal-best times (fastest-kill race)",
       },
@@ -429,7 +430,7 @@ async function handleLoot(store: Store, interaction: any): Promise<Response> {
       any === 0
         ? "No Dink loot captured yet. Named-drop tracking needs the RuneLite **Dink** " +
             "plugin pointed at the bot — a one-time webhook paste per person " +
-            "(see `DINK_SETUP.md`). WOM-based `/drops` works without it."
+            "(run `/dink setup`). WOM-based `/drops` works without it."
         : `No loot logged in the last ${days}d.`,
     );
   }
@@ -478,7 +479,7 @@ async function handlePb(store: Store, interaction: any): Promise<Response> {
     if (!rows.length) {
       return reply(
         `No personal bests recorded for **${bossInput}** yet. PB times come from Dink ` +
-          "(a timed boss kill), so a clanmate needs the webhook set up (`DINK_SETUP.md`). " +
+          "(a timed boss kill), so a clanmate needs the webhook set up (`/dink setup`). " +
           'Use the spelling Dink shows (e.g. "Zulrah", "Vorkath", "TzKal-Zuk").',
       );
     }
@@ -501,7 +502,7 @@ async function handlePb(store: Store, interaction: any): Promise<Response> {
     const any = await store.dinkEventCount();
     return reply(
       any === 0
-        ? "No personal bests captured yet — PB times need the Dink plugin (see `DINK_SETUP.md`)."
+        ? "No personal bests captured yet — PB times need the Dink plugin (run `/dink setup`)."
         : "No personal bests recorded yet. Name a boss too: `/pb boss:Zulrah`.",
     );
   }
@@ -516,6 +517,33 @@ async function handlePb(store: Store, interaction: any): Promise<Response> {
     color: EMBED_COLOR,
     description: lines,
   });
+}
+
+/**
+ * /dink setup — hand the caller their webhook line with DINK_SECRET filled in,
+ * ephemerally. Gated on the caller being linked to a tracked player: the key is
+ * only useful for tracked RSNs anyway (the receiver roster-gates), and this keeps
+ * it inside the clan rather than with anyone who can see the server. The origin
+ * comes from the request, so the link always matches the Worker that served it.
+ */
+async function handleDinkSetup(
+  env: Env,
+  store: Store,
+  interaction: any,
+  origin: string,
+): Promise<Response> {
+  if (!env.DINK_SECRET) {
+    console.error("dink setup: DINK_SECRET not configured");
+    return reply("⚠️ The Dink receiver isn't configured yet (no key set). Ping Eric.");
+  }
+  const player = await store.resolveRsn(null, userId(interaction));
+  if (!player) {
+    return reply(
+      "Link your RuneScape name first: `/iam <rsn>`. If you're not on the roster yet, " +
+        "ask an admin to `/track add <rsn> @you`. Then run `/dink setup` again.",
+    );
+  }
+  return reply(dinkSetupMessage(origin, env.DINK_SECRET, player.display_name));
 }
 
 async function handleConfig(store: Store, interaction: any): Promise<Response> {
@@ -852,6 +880,8 @@ export default {
           return await handleLoot(store, interaction);
         case "pb":
           return await handlePb(store, interaction);
+        case "dink":
+          return await handleDinkSetup(env, store, interaction, url.origin);
         case "stats":
           return await handleStats(store, interaction);
         case "config":

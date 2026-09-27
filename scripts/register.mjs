@@ -190,6 +190,13 @@ const commands = [
     ],
   },
   {
+    name: "dink",
+    description: "Set up the RuneLite Dink plugin to feed /loot and /pb",
+    options: [
+      { type: 1, name: "setup", description: "Your personal webhook link + steps (only you see it)" },
+    ],
+  },
+  {
     name: "stats",
     description: "A player's current stats",
     options: [

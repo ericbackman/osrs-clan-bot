@@ -150,7 +150,7 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   ```
 - **Verify**: console prints `Registered 11 commands to guild 690589122833678427.`
   (count matches however many top-level commands are in `scripts/register.mjs`
-  at the time — 11 after the 2026-07-18 `/loot` + `/pb` additions; 9 before). The
+  at the time — 12 after the 2026-09-27 `/dink setup` addition; 11 after `/loot` + `/pb`). The
   new/changed command appears in the Discord guild **immediately.** It's
   guild-scoped, not global.
 - **If it fails**: exit code 1 with `Missing config...` means `DISCORD_TOKEN` /
@@ -224,8 +224,10 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   ```bash
   npx wrangler d1 execute osrs_clan --remote --command "SELECT type, COUNT(*) n FROM dink_events GROUP BY type ORDER BY n DESC"
   ```
-- **Share the key** with clanmates via Discord DM (never a public channel);
-  update `DINK_SETUP.md`'s placeholder only in a private paste, not in the repo.
+- **Share the key** by pointing clanmates at `/dink setup`: it replies
+  ephemerally with the full webhook URL, key filled in, and only to members
+  linked to a tracked RSN (`/iam`). After a rotation, everyone re-runs it and
+  re-pastes. Never put the key in the repo or a public channel.
 - **If it fails**: 401 for a clanmate who has the right key → check for a trailing
   space/newline in their pasted URL. Events arriving but not stored → the sender's
   RSN isn't in `players` (roster gate) — `/track add` them; or the event type is
@@ -248,7 +250,7 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 | `/loot` or `/pb` says "No Dink … captured yet" for everyone | `DINK_SECRET` unset (endpoint 503s), no clanmate has set up the webhook, or the endpoint URL is wrong | OP-6: confirm the secret is set (`curl` returns 401 not 503) and at least one clanmate followed `DINK_SETUP.md`. Empty state is **expected** until someone opts in — WOM commands are unaffected | `SELECT COUNT(*) FROM dink_events` > 0; the row appears after a real in-game event |
 | A clanmate's drops/PBs never appear, but others' do | Their RSN isn't in `players` (roster gate silently ignores the event), or they didn't enable the matching Dink notifier (Loot / Kill Count) | `/track add <rsn>` (or `/iam`); have them tick the notifier. Check `wrangler tail` for `dink: ignoring … from untracked '<name>'` | Their events appear in `dink_events` after the next drop/kill |
 | Same drop counted twice on `/loot` | Would require two DB rows with different `dedup_key` for one event — shouldn't happen (stable natural key + INSERT OR IGNORE) | Rare — inspect the two rows' `dedup_key`; if a Dink schema change altered a keyed field, reconcile in `dedupKeyFor` (`src/dink.ts`). Do **not** hand-delete rows | Each real event has exactly one `dink_events` row (UNIQUE on `dedup_key`) |
-| `POST /dink` returns 401 for a set-up clanmate | Wrong/rotated key, or a trailing space/newline in their pasted webhook URL | Re-share the exact key (OP-6); have them re-paste the URL on one line | `curl … ?key=<correct>` with a minimal body no longer 401s |
+| `POST /dink` returns 401 for a set-up clanmate | Wrong/rotated key, or a trailing space/newline in their pasted webhook URL | Have them re-run `/dink setup` and re-paste the URL on one line | `curl … ?key=<correct>` with a minimal body no longer 401s |
 
 ## 5. Tuning knobs
 

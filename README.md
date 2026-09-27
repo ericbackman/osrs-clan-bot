@@ -47,6 +47,7 @@ Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 | `/drops [day\|week\|month]` | anyone | rare-drop (collection log) leaderboard |
 | `/boss [name] [day\|week\|month]` | anyone | PvM kill-count race (all bosses, or one) |
 | `/clues [tier] [day\|week\|month]` | anyone | clue-scroll casket race |
+| `/dink setup` | tracked member | your Dink webhook link (key filled in) + the RuneLite steps, only you see it |
 | `/loot [day\|week\|month]` | anyone | named-drop value race + biggest drop *(needs Dink — see [`DINK_SETUP.md`](DINK_SETUP.md))* |
 | `/pb [boss]` | anyone | boss personal-best times *(needs Dink)* |
 | `/stats <rsn \| @member>` | anyone | a player's current levels & XP |

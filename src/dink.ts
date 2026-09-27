@@ -295,3 +295,24 @@ export function formatDuration(sec: number): string {
   const s = sec - m * 60;
   return `${m}:${s.toFixed(2).padStart(5, "0")}`;
 }
+
+/**
+ * The ephemeral `/dink setup` reply: the exact webhook line (key filled in) plus
+ * the RuneLite steps, so a clanmate never copies the key by hand from a DM.
+ * Pure so the URL shape is tested; the key is URI-encoded because it rides in a
+ * query string and Dink sends the URL verbatim.
+ */
+export function dinkSetupMessage(origin: string, key: string, displayName: string): string {
+  const webhook = `${origin}/dink?key=${encodeURIComponent(key)}`;
+  return (
+    `**Dink setup for ${displayName}** (only you can see this; don't share the link)\n\n` +
+    "1. In RuneLite, open the wrench (Configuration). No Dink yet? Plugin Hub → search **Dink** → Install.\n" +
+    "2. Open **Dink** settings and find **Primary Webhook URLs** (one URL per line).\n" +
+    "3. Add this on a **new line**, keeping any Discord webhook already there:\n" +
+    "```\n" + webhook + "\n```\n" +
+    "4. Make sure the **Loot** and **Kill Count** notifiers are ticked " +
+    "(Collection Log, Pet, Clue Scroll and Level are nice extras).\n\n" +
+    "Test it: get a drop or kill a boss, then run `/loot` or `/pb`. " +
+    "Deaths, trades and GE activity are discarded on arrival, never stored."
+  );
+}

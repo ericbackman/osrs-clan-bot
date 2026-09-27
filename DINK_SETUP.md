@@ -39,16 +39,12 @@ destination. (No Dink yet? In RuneLite: **Configuration 🔧 → Plugin Hub → 
 2. Search **Dink** and click it to open its settings.
 3. Find **"Primary Webhook URLs"** — the box where your Discord webhook already
    lives. It takes **one URL per line**.
-4. Add a **new line** with the bot's address (keep your existing Discord line —
-   both work at once):
+4. In Discord, run **`/dink setup`**. The bot replies (only you can see it)
+   with your exact webhook line, key already filled in. Copy it and add it as a
+   **new line** in that box, keeping your existing Discord line (both work at once).
 
-   ```
-   https://osrs-clan-bot.ericbackman81.workers.dev/dink?key=ASK-ERIC-FOR-THE-KEY
-   ```
-
-   > 🔑 **Get the real `key=` value from Eric** (Discord DM). It's a shared
-   > password that stops randoms from spamming the bot — don't post it in a public
-   > channel. Paste it exactly, no spaces.
+   > 🔑 The link contains the clan's shared key. Don't post it in a public
+   > channel. If `/dink setup` says to link first, run `/iam <your rsn>`.
 
 5. Done. Really.
 

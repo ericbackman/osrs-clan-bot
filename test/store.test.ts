@@ -83,3 +83,35 @@ describe("Store.linkDiscord — /iam identity-hijack guard", () => {
     expect(stolen).toBe(false);
   });
 });
+
+describe("Store.vouchedPlayerFor — /dink setup gate", () => {
+  it("refuses a row the member created for themselves with /iam", async () => {
+    const store = new Store(makeFakeD1());
+    await store.linkDiscord("Zezima", "user1", "Zezima", "user1", "t1");
+    expect(await store.vouchedPlayerFor("user1")).toBeNull();
+  });
+
+  it("passes once an admin /track adds the same rsn (iam first, then track add)", async () => {
+    const store = new Store(makeFakeD1());
+    await store.linkDiscord("Zezima", "user1", "Zezima", "user1", "t1");
+    await store.addPlayer("Zezima", "Zezima", "admin1", "t2"); // INSERT OR IGNORE: no-op
+    await store.vouch("Zezima", "admin1", "user1");
+    expect((await store.vouchedPlayerFor("user1"))?.rsn).toBe("zezima");
+  });
+
+  it("passes for a row an admin added and linked to the member", async () => {
+    const store = new Store(makeFakeD1());
+    await store.addPlayer("Zezima", "Zezima", "admin1", "t1");
+    await store.linkDiscord("Zezima", "user1", "Zezima", "admin1", "t1");
+    expect((await store.vouchedPlayerFor("user1"))?.rsn).toBe("zezima");
+  });
+});
+
+describe("Store.vouch — never vouches for a squatter", () => {
+  it("leaves a row linked to someone else unvouched", async () => {
+    const store = new Store(makeFakeD1());
+    await store.linkDiscord("Zezima", "squatter", "Zezima", "squatter", "t1");
+    await store.vouch("Zezima", "admin1", "realOwner");
+    expect(await store.vouchedPlayerFor("squatter")).toBeNull();
+  });
+});

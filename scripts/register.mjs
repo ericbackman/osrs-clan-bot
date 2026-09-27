@@ -161,6 +161,43 @@ const commands = [
     ],
   },
   {
+    name: "loot",
+    description: "Named-drop value board + biggest drop (needs the Dink plugin)",
+    options: [
+      {
+        type: 3,
+        name: "window",
+        description: "Time window",
+        required: false,
+        choices: [
+          { name: "day", value: "day" },
+          { name: "week", value: "week" },
+          { name: "month", value: "month" },
+        ],
+      },
+    ],
+  },
+  {
+    name: "pb",
+    description: "Boss personal-best times from Dink (fastest-kill race)",
+    options: [
+      {
+        type: 3,
+        name: "boss",
+        description: 'Boss name as Dink spells it (e.g. Zulrah). Omit for recent PBs.',
+        required: false,
+        max_length: 64,
+      },
+    ],
+  },
+  {
+    name: "dink",
+    description: "Set up the RuneLite Dink plugin to feed /loot and /pb",
+    options: [
+      { type: 1, name: "setup", description: "Your personal webhook link + steps (only you see it)" },
+    ],
+  },
+  {
     name: "stats",
     description: "A player's current stats",
     options: [

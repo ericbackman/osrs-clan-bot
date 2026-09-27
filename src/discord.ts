@@ -9,6 +9,7 @@ export interface Env {
   DISCORD_PUBLIC_KEY: string; // var
   GUILD_ID: string; // var — single-server bot
   SEED_PLAYERS?: string; // var — declarative roster, reconciled into D1 (see store.ts)
+  DINK_SECRET?: string; // secret: wrangler secret put DINK_SECRET — shared key Dink puts in the webhook URL (?key=…); gates POST /dink
   ANTHROPIC_API_KEY?: string; // secret, phase 3 (/ask)
 }
 

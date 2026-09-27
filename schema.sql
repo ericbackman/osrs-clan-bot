@@ -71,3 +71,33 @@ CREATE TABLE IF NOT EXISTS announced_milestones (
   announced_at TEXT NOT NULL,
   PRIMARY KEY (rsn, milestone)
 );
+
+-- Real-time events pushed by the RuneLite **Dink** plugin (client -> POST /dink),
+-- normalized to the handful of fields our boards use (see src/dink.ts). This is a
+-- SEPARATE, ADDITIVE, opt-in data source layered on top of the WOM nightly poll —
+-- WOM stays the universal baseline for everyone; Dink adds item-level, real-time
+-- richness for whoever points a webhook at us. Unlike WOM's aggregate counters,
+-- Dink knows *which* item dropped, its value, the source, and boss PB times
+-- (which the Hiscores don't expose at all). Append-only; `dedup_key` is a STABLE
+-- natural key (never the receive time) so Dink's identical retries are idempotent
+-- via INSERT OR IGNORE — same pattern as snapshots/announced_milestones.
+CREATE TABLE IF NOT EXISTS dink_events (
+  event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  rsn          TEXT NOT NULL,     -- canonical RSN, mapped from Dink's playerName
+  type         TEXT NOT NULL,     -- Dink type: LOOT, KILL_COUNT, PET, COLLECTION, CLUE, LEVEL, ...
+  occurred_at  TEXT NOT NULL,     -- UTC ISO — when we RECEIVED it (Dink sends no reliable event ts)
+  source       TEXT,              -- what produced it (boss/npc/activity/clue tier)
+  item         TEXT,              -- headline item (loot: most valuable; pet: pet name; coll: item)
+  item_id      INTEGER,
+  quantity     INTEGER,
+  value        INTEGER,           -- gp value for the event (loot: total; coll/clue: reward value)
+  rarity       REAL,              -- drop probability if Dink provided it (for a future "luckiest")
+  kc           INTEGER,           -- kill count at the event
+  pb_seconds   REAL,              -- personal-best time in seconds, only when this kill was a PB
+  detail       TEXT,              -- freeform: "99 Slayer", clue tier, collection-log progress, etc.
+  account_hash TEXT,              -- Dink's persistent account hash (rename-proof id, for future use)
+  dedup_key    TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_dink_rsn  ON dink_events(rsn);
+CREATE INDEX IF NOT EXISTS idx_dink_type ON dink_events(type);
+CREATE INDEX IF NOT EXISTS idx_dink_time ON dink_events(occurred_at);

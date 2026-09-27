@@ -3,5 +3,11 @@
 
 DISCORD_TOKEN=your-bot-token-here
 
+# Dink webhook receiver — shared key clanmates put in their Dink URL (?key=…).
+# Needed only for local `wrangler dev` testing of POST /dink; in prod it's a
+# Worker secret (`wrangler secret put DINK_SECRET`, PLAYBOOK OP-6). Not used by
+# `npm run register`.
+DINK_SECRET=pick-any-random-string
+
 # Phase 3 (LLM /ask) — optional until then:
 # ANTHROPIC_API_KEY=sk-ant-...

@@ -10,7 +10,7 @@
     "register": "node scripts/register.mjs"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250620.0",
+    "@cloudflare/workers-types": "^5.20260714.1",
     "typescript": "^5.5.4",
     "vitest": "^3.0.0",
     "wrangler": "^4.100.0"

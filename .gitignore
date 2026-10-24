@@ -12,3 +12,10 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+
+# Secrets: wrangler 4 loads .env, .env.local and .env.<name> as Worker secrets; STANDARDS Tier 0 rule 2
+.env.*
+!.env.example
+credentials.json
+token.json
+*.db

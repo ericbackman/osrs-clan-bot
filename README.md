@@ -6,6 +6,8 @@ running anything sketchy.** It reads public stats from the **Wise Old Man** API,
 stores them in Cloudflare **D1**, and serves everything from a Cloudflare
 **Worker**. (No game automation, this is the opposite of a botting client.)
 
+Unofficial; not affiliated with or endorsed by Jagex.
+
 Live at `https://osrs-clan-bot.ericbackman81.workers.dev`.
 
 ## What it does
@@ -85,7 +87,7 @@ schema.sql       D1 tables
   baseline; Dink is additive and per-player opt-in. Only public event types are
   stored (deaths/trades/GE are dropped on arrival). See [`DINK_SETUP.md`](DINK_SETUP.md).
 - **The roster self-heals.** Players live in D1 (durable, a redeploy never wipes
-  it), but the core clan is also declared in `SEED_PLAYERS` (`wrangler.jsonc`).
+  it), but the core clan is also declared in the `SEED_PLAYERS` secret.
   The bot reconciles that list into D1 on every command and the nightly cron, so
   if the table is ever emptied (fresh/reset DB, or writes that went to a local
   `wrangler dev` DB) the roster comes back on its own: no re-adding by hand. The

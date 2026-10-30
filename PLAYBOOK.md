@@ -47,8 +47,8 @@
   always answer from D1, never call WOM live (exception: `/track add` grabs one
   immediate snapshot: `src/index.ts` `handleTrack`, sub `add`). **Dink** is a
   second, optional source that pushes to D1 via `/dink` (not a WOM replacement).
-- **Roster self-heal**: the core roster is declared in `SEED_PLAYERS`
-  (`wrangler.jsonc`, RSN-only, public repo) and reconciled into `players`
+- **Roster self-heal**: the core roster is declared in the `SEED_PLAYERS`
+  Worker secret and reconciled into `players`
   (INSERT OR IGNORE) on every interaction (marker-guarded on the `seed_applied`
   setting) and unconditionally on the nightly cron: survives a wiped/reset D1
   with no manual `/track add`. Additive only: never removes `/track add` players
@@ -179,7 +179,7 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 
 ### OP-5: Populate or update the seed roster (self-heal source)
 
-- **What it is**: `SEED_PLAYERS` (a `wrangler.jsonc` `vars` string) is the
+- **What it is**: `SEED_PLAYERS` (a Worker secret) is the
   declarative core roster, reconciled into `players` by `ensureSeedPlayers`
   (`src/store.ts`): marker-guarded on every interaction (`seed_applied` setting),
   unconditional on the nightly cron (`runDailySnapshot`). This is what makes an
@@ -192,13 +192,14 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
   ```bash
   npx wrangler d1 execute osrs_clan --remote --command "SELECT group_concat(display_name || CASE WHEN discord_user_id IS NOT NULL THEN '=' || discord_user_id ELSE '' END, ', ') AS seed_players FROM players"
   ```
-  Paste the value into `SEED_PLAYERS` in `wrangler.jsonc`, then deploy (OP-2).
-  **Repo is PUBLIC.** Keep it RSN-only (Discord IDs are personal; links live in
-  D1 and re-link via `/iam` if ever fully wiped).
+  Paste the value at the prompt of `npx wrangler secret put SEED_PLAYERS`. No separate
+  `wrangler deploy` is needed, because `secret put` deploys a new version itself. The
+  one exception was the 2026-10-30 cutover from a var, which deployed first (see §8). Never
+  put it in `wrangler.jsonc`: the repo is PUBLIC.
 - **Verify**: after a command/cron, `SELECT value FROM settings WHERE key='seed_applied'`
   equals the `SEED_PLAYERS` string; `/track list` shows everyone.
 - **If it fails**: a player didn't seed → check its entry is `RSN` or
-  `RSN=discordId` (digits-only id). `SEED_PLAYERS=""` disables the feature.
+  `RSN=discordId` (digits-only id). `npx wrangler secret delete SEED_PLAYERS` disables the feature.
 
 ### OP-6: Set / rotate the Dink secret + verify the `/dink` endpoint
 
@@ -265,7 +266,7 @@ Expect a `schedule` row (`daily`/`weekly`/`off`) and, if not `off`, a
 | Cron time | `wrangler.jsonc` `triggers.crons` | `"0 8 * * *"` (08:00 UTC) | any valid cron string; keep once-daily | agent (mechanical, redeploy required after changing) |
 | WOM politeness delay between players | `src/index.ts` `runDailySnapshot`, ~line 300, `setTimeout(r, 300)` | 300ms | do not shrink — WOM asks for polite, identifiable usage (also see `src/wom.ts` `USER_AGENT`) | agent, but treat as a floor not a target |
 | Leaderboard/drops display cap | `src/index.ts` `boardLines(ranked, limit = 15)` line 61; `/drops` handler `.slice(0, 15)` line 258 | 15 | cosmetic: any positive integer | agent |
-| Core seed roster | `wrangler.jsonc` `vars.SEED_PLAYERS`; reconciled by `src/store.ts` `ensureSeedPlayers` (OP-5) | `BodyMeat, IrnmnOfPants, rolf it` (RSN-only, public repo) | comma-sep `RSN`/`RSN=discordId`; additive only (never removes/clobbers) | agent may edit the *string*; **membership** is Eric's call |
+| Core seed roster | Worker secret `SEED_PLAYERS`; reconciled by `src/store.ts` `ensureSeedPlayers` (OP-5) | set in the secret, not in the repo | comma-sep `RSN`/`RSN=discordId`; additive only (never removes/clobbers) | agent may edit the *string*; **membership** is Eric's call |
 | Seed merge policy (seed vs `/iam`) | `src/store.ts` `ensureSeedPlayers`, the `WHERE ... discord_user_id IS NULL` guard | member's `/iam` link wins over the seed | flip to seed-wins only with Eric's OK — would overwrite members' self-set links | **Eric** |
 | `dropScore()` "biggest drop" metric | `src/dink.ts` (boxed "MAKE IT YOURS" comment); `test/dink.test.ts` pins the baseline | raw gp value | any function of (value, rarity) — e.g. weight rarity to reward luck over gear. If it leans on rarity, widen `topLootRowsSince`'s value-ordered prefilter too | **Eric** — it's a ranking-semantics call, like `scorePlayer` |
 | Dink privacy allowlist (`CAPTURED_TYPES`) | `src/dink.ts` — the set of stored event types | public tier only (loot/KC/pet/clue/level/quest/diary/CA/…); DEATH/GE/TRADE/GROUP_STORAGE/CHAT dropped on arrival | adding a type = the bot starts storing + can surface it; **what the clan broadcasts is Eric's call** (§6). Removing a type stops new capture (no backfill) | **Eric** approves opting a sensitive type in; agent may edit the set on his say-so |
@@ -387,3 +388,8 @@ Update this playbook in the SAME change as any operation change.
   apply schema (OP-4, adds `dink_events`) → deploy (OP-2) → re-register 11
   commands (OP-3). All 37 tests green + `tsc` clean pre-deploy. First real event
   from a set-up clanmate confirms the path (OP-6 verify).
+- 2026-10-30 — **seed roster moved to a secret**. `SEED_PLAYERS` left `wrangler.jsonc`
+  so players' names are not in the public repo; the code is unchanged. **Deploy order**:
+  deploy (OP-2) to drop the var, then `wrangler secret put SEED_PLAYERS`, because a var and
+  a secret cannot share a name. Unset in between is safe: seeding returns early and D1 keeps
+  the roster.

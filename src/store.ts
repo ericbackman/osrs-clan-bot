@@ -64,7 +64,7 @@ export interface SeedEntry {
 }
 
 /**
- * Parse the SEED_PLAYERS var into roster entries — the declarative source for
+ * Parse the SEED_PLAYERS secret into roster entries — the declarative source for
  * the clan's core members, so the roster self-heals if the players table is
  * ever emptied (fresh/wiped D1, wrong-env write, manual mistake). Format:
  * comma- or newline-separated, each `RSN` or `RSN=discordId` (`:` also works).
